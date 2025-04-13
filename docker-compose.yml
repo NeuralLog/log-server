@@ -1,0 +1,39 @@
+
+Console Error
+
+
+Error: Failed to fetch
+
+src/sdk/logs/api-client.ts (91:28) @ LogsApiClient.makeRequest
+
+
+  89 |     }
+  90 |
+> 91 |     const response = await fetch(url, {
+     |                            ^
+  92 |       method,
+  93 |       headers,
+  94 |       body: body ? JSON.stringify(body) : undefined,
+Call Stack
+5
+
+LogsApiClient.makeRequest
+src/sdk/logs/api-client.ts (91:28)
+LogsApiClient.apiRequest
+src/sdk/logs/api-client.ts (71:23)
+LogsApiClient.getLogs
+src/sdk/logs/api-client.ts (109:17)
+LogsService.getLogNames
+src/services/logsService.ts (50:42)
+DashboardPage.useCallback[fetchLogs]
+src/app/dashboard/page.tsx (47:41)
+Was this helpful?
+
+
+
+1
+2
+
+1/1
+
+Next.js 15.2.5 (stale)

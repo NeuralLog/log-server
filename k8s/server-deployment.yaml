@@ -1,0 +1,109 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neurallog-server
+  labels:
+    app: neurallog
+    component: server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: neurallog
+      component: server
+  template:
+    metadata:
+      labels:
+        app: neurallog
+        component: server
+    spec:
+      containers:
+      - name: server
+        image: neurallog/server:latest  # Replace with your image repository
+        ports:
+        - containerPort: 3030
+          name: http
+        env:
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: neurallog-config
+              key: NODE_ENV
+        - name: PORT
+          valueFrom:
+            configMapKeyRef:
+              name: neurallog-config
+              key: PORT
+        - name: DEFAULT_NAMESPACE
+          valueFrom:
+            configMapKeyRef:
+              name: neurallog-config
+              key: DEFAULT_NAMESPACE
+        - name: STORAGE_TYPE
+          valueFrom:
+            configMapKeyRef:
+              name: neurallog-config
+              key: STORAGE_TYPE
+        # Redis configuration (only used when STORAGE_TYPE=redis)
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: neurallog-config
+              key: REDIS_HOST
+              optional: true
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: neurallog-config
+              key: REDIS_PORT
+              optional: true
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: neurallog-secrets
+              key: REDIS_PASSWORD
+              optional: true
+        # NeDB configuration (only used when STORAGE_TYPE=nedb)
+        - name: DB_PATH
+          value: "/app/data"
+        volumeMounts:
+        - name: server-data
+          mountPath: /app/data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: server-data
+        persistentVolumeClaim:
+          claimName: neurallog-server-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: neurallog-server
+  labels:
+    app: neurallog
+    component: server
+spec:
+  ports:
+  - port: 80
+    targetPort: 3030
+    name: http
+  selector:
+    app: neurallog
+    component: server
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: neurallog-server-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
