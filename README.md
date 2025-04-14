@@ -422,6 +422,21 @@ The NeuralLog server is under active development with the following features pla
 - Enhanced security features
 - Scalable architecture for high-volume logging
 
+## Documentation
+
+Detailed documentation is available in the [docs](./docs) directory:
+
+- [API Reference](./docs/api.md)
+- [Configuration](./docs/configuration.md)
+- [Architecture](./docs/architecture.md)
+- [Examples](./docs/examples)
+
+For integration guides and tutorials, visit the [NeuralLog Documentation Site](https://neurallog.github.io/docs/).
+
+## Contributing
+
+Contributions are welcome! Please read our [Contributing Guide](./CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
+
 ## License
 
 MIT
