@@ -11,6 +11,10 @@ import { authClient } from '../services/AuthClient';
  */
 export const tokenAuthMiddleware = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // Skip authentication if skipAuth flag is set
+    if (req.skipAuth) {
+      return next();
+    }
     // Get the Authorization header
     const authHeader = req.headers.authorization;
 

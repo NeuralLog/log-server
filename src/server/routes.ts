@@ -10,6 +10,7 @@ import {
   deleteLogEntryById,
   searchLogs
 } from './controllers/logsController';
+import { permissionController } from '../controllers/PermissionController';
 
 const router = express.Router();
 
@@ -326,5 +327,73 @@ router.post('/logs/:logName/:logId', updateLogEntryById);
  *         description: Server error
  */
 router.delete('/logs/:logName/:logId', deleteLogEntryById);
+
+/**
+ * @swagger
+ * /permissions/check:
+ *   post:
+ *     summary: Check if a user has permission to perform an action on a resource
+ *     tags: [Permissions]
+ *     parameters:
+ *       - $ref: '#/components/parameters/namespaceParam'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - action
+ *               - resource
+ *             properties:
+ *               action:
+ *                 type: string
+ *                 description: Action to check (e.g., read, write, delete)
+ *                 example: read
+ *               resource:
+ *                 type: string
+ *                 description: Resource to check permission for
+ *                 example: logs/test-log
+ *               contextualTuples:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     user:
+ *                       type: string
+ *                       description: User identifier
+ *                       example: user:123
+ *                     relation:
+ *                       type: string
+ *                       description: Relation type
+ *                       example: member
+ *                     object:
+ *                       type: string
+ *                       description: Object identifier
+ *                       example: group:456
+ *     responses:
+ *       200:
+ *         description: Permission check result
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 allowed:
+ *                   type: boolean
+ *                   description: Whether the permission is allowed
+ *       400:
+ *         description: Bad request
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+// Skip authentication middleware for permission check endpoint
+router.post('/permissions/check', (req, res, next) => {
+  // Skip authentication middleware
+  req.skipAuth = true;
+  next();
+}, permissionController.checkPermission.bind(permissionController));
 
 export default router;

@@ -12,6 +12,11 @@ import { authClient } from '../services/AuthClient';
  */
 export const apiKeyAuthMiddleware = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // Skip authentication if skipAuth flag is set
+    if (req.skipAuth) {
+      return next();
+    }
+
     // Skip if already authenticated by token
     if (req.isAuthenticated) {
       return next();

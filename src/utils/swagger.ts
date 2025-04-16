@@ -10,6 +10,17 @@ import logger from './logger';
 const openApiPath = path.join(__dirname, '..', 'openapi.yaml');
 const openApiSpec = yaml.load(fs.readFileSync(openApiPath, 'utf8')) as Record<string, any>;
 
+// Add Permissions tag if it doesn't exist
+if (!openApiSpec.tags) {
+  openApiSpec.tags = [];
+}
+if (!openApiSpec.tags.find((tag: any) => tag.name === 'Permissions')) {
+  openApiSpec.tags.push({
+    name: 'Permissions',
+    description: 'Permission management'
+  });
+}
+
 // Function to setup Swagger and OpenAPI validation
 export const setupSwagger = (app: express.Application): void => {
   // Serve swagger docs

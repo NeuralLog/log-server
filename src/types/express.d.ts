@@ -11,17 +11,27 @@ declare global {
          * User ID
          */
         id: string;
-        
+
         /**
          * Tenant ID
          */
         tenantId: string;
       };
-      
+
       /**
        * Whether the request is authenticated
        */
       isAuthenticated?: boolean;
+
+      /**
+       * Whether to skip authentication for this request
+       */
+      skipAuth?: boolean;
+
+      /**
+       * Resource information
+       */
+      resource?: string;
     }
   }
 }

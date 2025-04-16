@@ -380,6 +380,40 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/ServerError'
+  /permissions/check:
+    post:
+      summary: Check if a user has permission to perform an action on a resource
+      operationId: checkPermission
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: header
+          name: x-tenant-id
+          schema:
+            type: string
+          required: true
+          description: Tenant ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PermissionCheckRequest'
+      responses:
+        '200':
+          description: Permission check result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionCheckResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
 components:
   securitySchemes:
     bearerAuth:
@@ -504,6 +538,45 @@ components:
         hasMore:
           type: boolean
           description: Whether there are more entries
+    PermissionCheckRequest:
+      type: object
+      required:
+        - action
+        - resource
+      properties:
+        action:
+          type: string
+          description: Action to check (e.g., read, write, delete)
+          example: read
+        resource:
+          type: string
+          description: Resource to check permission for
+          example: logs/test-log
+        contextualTuples:
+          type: array
+          items:
+            type: object
+            properties:
+              user:
+                type: string
+                description: User identifier
+                example: user:123
+              relation:
+                type: string
+                description: Relation type
+                example: member
+              object:
+                type: string
+                description: Object identifier
+                example: group:456
+    PermissionCheckResponse:
+      type: object
+      required:
+        - allowed
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the permission is allowed
     Error:
       type: object
       required:

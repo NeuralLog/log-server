@@ -8,29 +8,30 @@ const discoveryService = DiscoveryService.getInstance();
 
 /**
  * Client for the auth service using the client-sdk
- * This provides a single source of truth for authentication
+ * This provides a source of truth for authentication
  */
 export class AuthClient {
-  private static instance: AuthClient;
   private authService: AuthService;
 
   /**
-   * Private constructor to enforce singleton pattern
+   * Constructor
+   *
+   * @param authUrl Optional auth service URL (defaults to environment variable or localhost)
    */
-  private constructor() {
-    // Initialize with a temporary URL, will be updated in initialize()
-    const tempAuthUrl = process.env.AUTH_URL || 'http://localhost:3040';
+  constructor(authUrl?: string) {
+    // Initialize with the provided URL or from environment variables
+    const initialAuthUrl = authUrl || process.env.AUTH_URL || 'http://localhost:3040';
 
     // Create an axios instance for the auth service
     const apiClient = axios.create({
-      baseURL: tempAuthUrl,
+      baseURL: initialAuthUrl,
       headers: {
         'Content-Type': 'application/json'
       }
     });
 
     // Create the auth service
-    this.authService = new AuthService(tempAuthUrl, apiClient);
+    this.authService = new AuthService(initialAuthUrl, apiClient);
 
     // Initialize the auth service with the correct URL
     this.initialize();
@@ -55,18 +56,6 @@ export class AuthClient {
   }
 
   /**
-   * Get the singleton instance
-   *
-   * @returns The AuthClient instance
-   */
-  public static getInstance(): AuthClient {
-    if (!AuthClient.instance) {
-      AuthClient.instance = new AuthClient();
-    }
-    return AuthClient.instance;
-  }
-
-  /**
    * Verify a resource token
    *
    * @param token Resource token to verify
@@ -79,18 +68,15 @@ export class AuthClient {
     resource?: string;
   }> {
     try {
-      // Since the client-sdk doesn't have a direct verifyResourceToken method,
-      // we'll implement a basic verification here
-      // In a real implementation, this would make a direct call to the auth service
-      // or use a method from the client-sdk
+      // Use the client-sdk to verify the token
+      const result = await this.authService.verifyResourceToken(token);
 
-      // For now, we'll just return a mock result
-      // This should be replaced with a proper implementation
+      // Return the verification result
       return {
-        valid: true,
-        userId: 'user-123',
-        tenantId: 'tenant-123',
-        resource: 'logs'
+        valid: result.valid,
+        userId: result.userId,
+        tenantId: result.tenantId,
+        resource: result.resource
       };
     } catch (error) {
       logger.error('Error verifying resource token:', error);
@@ -110,16 +96,23 @@ export class AuthClient {
     userId?: string;
   }> {
     try {
-      // Since the client-sdk doesn't have a direct verifyApiKey method,
-      // we'll implement a basic verification here
-      // In a real implementation, this would make a direct call to the auth service
-      // or use a method from the client-sdk
+      // Use the client-sdk to verify the API key
+      const valid = await this.authService.validateApiKey(apiKey);
 
-      // For now, we'll just return a mock result
-      // This should be replaced with a proper implementation
+      if (!valid) {
+        return { valid: false };
+      }
+
+      // Get API key metadata
+      const metadata = await this.getApiKeyMetadata(apiKey.split('.')[0], tenantId);
+
+      if (metadata.error || !metadata.apiKey) {
+        return { valid: false };
+      }
+
       return {
         valid: true,
-        userId: 'user-123'
+        userId: metadata.apiKey.userId
       };
     } catch (error) {
       logger.error('Error verifying API key:', error);
@@ -139,23 +132,19 @@ export class AuthClient {
     error?: string;
   }> {
     try {
-      // Since the client-sdk doesn't have a direct getApiKeyById method,
-      // we'll implement a basic mock here
-      // In a real implementation, this would make a direct call to the auth service
-      // or use a method from the client-sdk
-
-      // For now, we'll just return a mock result
-      // This should be replaced with a proper implementation
-      return {
-        apiKey: {
-          id: keyId,
-          userId: 'user-123',
-          tenantId: tenantId,
-          name: 'Mock API Key',
-          scopes: ['logs:read', 'logs:write'],
-          createdAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+      // Make a direct call to the auth service to get API key metadata
+      const response = await axios.get(
+        `${this.authService.getBaseUrl()}/api/apikeys/${keyId}`,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'x-tenant-id': tenantId
+          }
         }
+      );
+
+      return {
+        apiKey: response.data
       };
     } catch (error) {
       logger.error('Error getting API key metadata:', error);
@@ -182,5 +171,5 @@ export class AuthClient {
   }
 }
 
-// Export a singleton instance
-export const authClient = AuthClient.getInstance();
+// Create a default instance for backward compatibility
+export const authClient = new AuthClient();

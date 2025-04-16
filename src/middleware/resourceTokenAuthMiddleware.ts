@@ -11,6 +11,11 @@ import { authClient } from '../services/AuthClient';
  */
 export const resourceTokenAuthMiddleware = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // Skip authentication if skipAuth flag is set
+    if (req.skipAuth) {
+      return next();
+    }
+
     // Skip if already authenticated by another middleware
     if (req.isAuthenticated) {
       return next();
