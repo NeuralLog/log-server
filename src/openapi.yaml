@@ -414,6 +414,185 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/ServerError'
+  /retention-policy:
+    get:
+      summary: Get the retention policy for a tenant or specific log
+      operationId: getRetentionPolicy
+      tags:
+        - Retention Policy
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: header
+          name: x-tenant-id
+          schema:
+            type: string
+          required: true
+          description: Tenant ID
+        - in: query
+          name: logName
+          schema:
+            type: string
+          required: false
+          description: Log name (encrypted) - if not provided, returns the tenant-wide default policy
+      responses:
+        '200':
+          description: The retention policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetentionPolicy'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    post:
+      summary: Set the retention policy for a tenant or specific log
+      operationId: setRetentionPolicy
+      tags:
+        - Retention Policy
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: header
+          name: x-tenant-id
+          schema:
+            type: string
+          required: true
+          description: Tenant ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetentionPolicyRequest'
+      responses:
+        '200':
+          description: The updated retention policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetentionPolicy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    delete:
+      summary: Delete the retention policy for a tenant or specific log
+      operationId: deleteRetentionPolicy
+      tags:
+        - Retention Policy
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: header
+          name: x-tenant-id
+          schema:
+            type: string
+          required: true
+          description: Tenant ID
+        - in: query
+          name: logName
+          schema:
+            type: string
+          required: false
+          description: Log name (encrypted) - if not provided, deletes the tenant-wide default policy
+      responses:
+        '204':
+          description: Retention policy deleted successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  /retention-policy/all:
+    get:
+      summary: Get all retention policies for a tenant
+      operationId: getAllRetentionPolicies
+      tags:
+        - Retention Policy
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: header
+          name: x-tenant-id
+          schema:
+            type: string
+          required: true
+          description: Tenant ID
+      responses:
+        '200':
+          description: All retention policies for the tenant
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RetentionPolicy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  /retention-policy/expired-count:
+    get:
+      summary: Get the count of logs that would be affected by a retention policy change
+      operationId: getExpiredLogsCount
+      tags:
+        - Retention Policy
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: header
+          name: x-tenant-id
+          schema:
+            type: string
+          required: true
+          description: Tenant ID
+        - in: query
+          name: retentionPeriodMs
+          schema:
+            type: integer
+            format: int64
+          required: true
+          description: Retention period in milliseconds
+        - in: query
+          name: logName
+          schema:
+            type: string
+          required: false
+          description: Log name (encrypted) - if provided, gets the count for this specific log
+      responses:
+        '200':
+          description: The count of logs that would be affected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                    description: Number of logs that would be affected
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
 components:
   securitySchemes:
     bearerAuth:
@@ -577,6 +756,48 @@ components:
         allowed:
           type: boolean
           description: Whether the permission is allowed
+    RetentionPolicy:
+      type: object
+      required:
+        - tenantId
+        - retentionPeriodMs
+      properties:
+        tenantId:
+          type: string
+          description: Tenant ID
+        logName:
+          type: string
+          description: Log name (encrypted) - if not present, this is the tenant-wide default policy
+        retentionPeriodMs:
+          type: integer
+          format: int64
+          description: Retention period in milliseconds (-1 for unlimited retention)
+        createdAt:
+          type: string
+          format: date-time
+          description: Creation timestamp
+        updatedAt:
+          type: string
+          format: date-time
+          description: Last update timestamp
+        createdBy:
+          type: string
+          description: User ID of the user who created the policy
+        updatedBy:
+          type: string
+          description: User ID of the user who last updated the policy
+    RetentionPolicyRequest:
+      type: object
+      required:
+        - retentionPeriodMs
+      properties:
+        retentionPeriodMs:
+          type: integer
+          format: int64
+          description: Retention period in milliseconds (-1 for unlimited retention)
+        logName:
+          type: string
+          description: Log name (encrypted) - if not provided, sets the tenant-wide default policy
     Error:
       type: object
       required:

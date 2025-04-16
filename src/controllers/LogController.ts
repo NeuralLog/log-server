@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { LogService } from '../services/LogService';
 import { AuthService } from '../services/AuthService';
 import logger from '../utils/logger';
+import { RetentionPolicyStore } from '../storage/RetentionPolicyStore';
 import { Log, LogEntry, LogSearchOptions, PaginatedResult } from '@neurallog/client-sdk';
 
 /**
@@ -81,6 +82,28 @@ export class LogController {
       // Pass the log data directly from the wire protocol
       // The OpenAPI validator has already validated the request body
       const log = await this.logService.createLog(req.body);
+
+      // Apply the tenant's default retention policy to the new log if it exists
+      try {
+        const retentionPolicyStore = new RetentionPolicyStore();
+        await retentionPolicyStore.initialize();
+
+        // Get the tenant's default retention policy
+        const defaultPolicy = await retentionPolicyStore.getRetentionPolicy(tenantId);
+
+        if (defaultPolicy) {
+          // Apply the default policy to the new log
+          await retentionPolicyStore.setRetentionPolicy(
+            tenantId,
+            defaultPolicy.retentionPeriodMs,
+            log.name
+          );
+          logger.info(`Applied default retention policy to new log ${log.name}`);
+        }
+      } catch (policyError) {
+        // Log the error but don't fail the log creation
+        logger.warn(`Failed to apply default retention policy to new log ${log.name}:`, policyError);
+      }
 
       // Return the created log
       res.status(201).json(log);
@@ -414,6 +437,19 @@ export class LogController {
 
       // Delete the log
       await this.logService.deleteLog(logName);
+
+      // Clean up any retention policies for this log
+      try {
+        const retentionPolicyStore = new RetentionPolicyStore();
+        await retentionPolicyStore.initialize();
+
+        // Delete the retention policy for this log
+        await retentionPolicyStore.deleteRetentionPolicy(tenantId, logName);
+        logger.info(`Deleted retention policy for log ${logName}`);
+      } catch (policyError) {
+        // Log the error but don't fail the log deletion
+        logger.warn(`Failed to delete retention policy for log ${logName}:`, policyError);
+      }
 
       // Return 204 No Content for successful deletion
       res.status(204).end();

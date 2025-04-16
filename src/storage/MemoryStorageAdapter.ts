@@ -15,6 +15,9 @@ export class MemoryStorageAdapter implements StorageAdapter {
   private initialized: boolean = false;
   private namespace: string;
 
+  // Map of log entry IDs to creation timestamps for data retention
+  private timestamps: Map<string, number> = new Map();
+
   // Tenant logs storage
   private tenantLogs: Map<string, Map<string, Log>> = new Map();
   private ensureInitialized = async (): Promise<void> => {
@@ -77,6 +80,9 @@ export class MemoryStorageAdapter implements StorageAdapter {
         data: encryptedData,
         timestamp: new Date().toISOString()
       };
+
+      // Store the creation timestamp for data retention
+      this.timestamps.set(`${logName}:${logId}`, Date.now());
 
       // Get or create the log array
       if (!this.logs.has(logName)) {
@@ -187,6 +193,9 @@ export class MemoryStorageAdapter implements StorageAdapter {
       // Remove the entry
       logEntries.splice(index, 1);
 
+      // Remove the timestamp
+      this.timestamps.delete(`${logName}:${logId}`);
+
       logger.info(`Deleted log entry: ${logName}, ID: ${logId}, namespace: ${this.namespace}`);
       return true;
     } catch (error) {
@@ -265,6 +274,93 @@ export class MemoryStorageAdapter implements StorageAdapter {
     } catch (error) {
       logger.error(`Error clearing log: ${error instanceof Error ? error.message : String(error)}`);
       throw error;
+    }
+  }
+
+  /**
+   * Purge expired logs
+   *
+   * @param cutoffTime Timestamp before which logs are considered expired
+   * @param batchSize Maximum number of logs to purge in one batch
+   * @returns Result of the purge operation
+   */
+  public async purgeExpiredLogs(cutoffTime: number, batchSize: number = 1000): Promise<{ purgedCount: number }> {
+    await this.initialize();
+
+    try {
+      // Find expired log entries
+      const expiredEntries: string[] = [];
+
+      // Iterate through all timestamps
+      for (const [key, timestamp] of this.timestamps.entries()) {
+        if (timestamp <= cutoffTime) {
+          expiredEntries.push(key);
+
+          // Limit to batch size
+          if (expiredEntries.length >= batchSize) {
+            break;
+          }
+        }
+      }
+
+      if (expiredEntries.length === 0) {
+        logger.info(`No expired logs found for namespace: ${this.namespace}`);
+        return { purgedCount: 0 };
+      }
+
+      logger.info(`Found ${expiredEntries.length} expired logs for namespace: ${this.namespace}`);
+
+      // Delete the expired log entries
+      let deletedCount = 0;
+
+      for (const entry of expiredEntries) {
+        try {
+          const [logName, logId] = entry.split(':');
+
+          // Delete the log entry
+          const deleted = await this.deleteLogEntryById(logName, logId);
+
+          if (deleted) {
+            deletedCount++;
+          }
+        } catch (error) {
+          logger.error(`Error deleting log entry ${entry} for namespace ${this.namespace}:`, error);
+        }
+      }
+
+      logger.info(`Purged ${deletedCount} expired logs for namespace: ${this.namespace}`);
+
+      return { purgedCount: deletedCount };
+    } catch (error) {
+      logger.error(`Error purging expired logs for namespace ${this.namespace}:`, error);
+      return { purgedCount: 0 };
+    }
+  }
+
+  /**
+   * Count expired logs
+   *
+   * @param cutoffTime Timestamp before which logs are considered expired
+   * @returns Number of expired logs
+   */
+  public async countExpiredLogs(cutoffTime: number): Promise<number> {
+    await this.initialize();
+
+    try {
+      // Count all log entries created before the cutoff time
+      let count = 0;
+
+      // Iterate through all timestamps
+      for (const timestamp of this.timestamps.values()) {
+        if (timestamp <= cutoffTime) {
+          count++;
+        }
+      }
+
+      return count;
+    } catch (error) {
+      logger.error(`Error counting expired logs for namespace ${this.namespace}:`, error);
+      return 0;
     }
   }
 

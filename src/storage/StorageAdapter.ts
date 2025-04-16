@@ -181,4 +181,20 @@ export interface StorageAdapter {
    */
   searchLogEntries(logName: string, options: LogSearchOptions): Promise<PaginatedResult<LogEntry>>;
 
+  /**
+   * Purge expired logs
+   *
+   * @param cutoffTime Timestamp before which logs are considered expired
+   * @param batchSize Maximum number of logs to purge in one batch
+   * @returns Result of the purge operation
+   */
+  purgeExpiredLogs(cutoffTime: number, batchSize?: number): Promise<{ purgedCount: number }>;
+
+  /**
+   * Count expired logs
+   *
+   * @param cutoffTime Timestamp before which logs are considered expired
+   * @returns Number of expired logs
+   */
+  countExpiredLogs(cutoffTime: number): Promise<number>;
 }

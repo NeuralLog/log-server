@@ -13,6 +13,7 @@ import {
 import { permissionController } from '../controllers/PermissionController';
 import { publicKeyController } from '../controllers/PublicKeyController';
 import { kekController } from '../controllers/KEKController';
+import retentionPolicyRoutes from '../routes/retentionPolicyRoutes';
 
 const router = express.Router();
 
@@ -672,5 +673,8 @@ router.get('/kek-versions/current', kekController.getCurrentKEKVersion);
  *         description: Server error
  */
 router.put('/kek-versions/:id', kekController.updateKEKVersion);
+
+// Mount retention policy routes
+router.use('/', retentionPolicyRoutes);
 
 export default router;

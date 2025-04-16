@@ -569,7 +569,8 @@ export class NeDBStorageAdapter implements StorageAdapter {
         id: logId,
         logId: logName,
         data: encryptedData,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        createdAt: Date.now() // Store creation timestamp for data retention
       };
 
       // Insert the document
@@ -1148,6 +1149,83 @@ export class NeDBStorageAdapter implements StorageAdapter {
 
 
 
+
+  /**
+   * Count expired logs
+   *
+   * @param cutoffTime Timestamp before which logs are considered expired
+   * @returns Number of expired logs
+   */
+  public async countExpiredLogs(cutoffTime: number): Promise<number> {
+    await this.ensureInitialized();
+
+    try {
+      // Count all log entries created before the cutoff time
+      const expiredEntries = await this.find<LogEntry>(
+        this._logsDb,
+        { createdAt: { $lte: cutoffTime } }
+      );
+
+      return expiredEntries.length;
+    } catch (error) {
+      logger.error(`Error counting expired logs for namespace ${this.namespace}:`, error);
+      return 0;
+    }
+  }
+
+  /**
+   * Purge expired logs
+   *
+   * @param cutoffTime Timestamp before which logs are considered expired
+   * @param batchSize Maximum number of logs to purge in one batch
+   * @returns Result of the purge operation
+   */
+  public async purgeExpiredLogs(cutoffTime: number, batchSize: number = 1000): Promise<{ purgedCount: number }> {
+    await this.ensureInitialized();
+
+    try {
+      // Find expired log entries
+      const expiredEntries = await this.find<LogEntry>(
+        this._logsDb,
+        { createdAt: { $lte: cutoffTime } },
+        {},
+        batchSize
+      );
+
+      if (expiredEntries.length === 0) {
+        logger.info(`No expired logs found for namespace: ${this.namespace}`);
+        return { purgedCount: 0 };
+      }
+
+      logger.info(`Found ${expiredEntries.length} expired logs for namespace: ${this.namespace}`);
+
+      // Delete the expired log entries
+      let deletedCount = 0;
+
+      for (const entry of expiredEntries) {
+        try {
+          // Delete the log entry
+          const numRemoved = await this.remove(
+            this._logsDb,
+            { id: entry.id, logId: entry.logId }
+          );
+
+          if (numRemoved > 0) {
+            deletedCount++;
+          }
+        } catch (error) {
+          logger.error(`Error deleting log entry ${entry.id} for namespace ${this.namespace}:`, error);
+        }
+      }
+
+      logger.info(`Purged ${deletedCount} expired logs for namespace: ${this.namespace}`);
+
+      return { purgedCount: deletedCount };
+    } catch (error) {
+      logger.error(`Error purging expired logs for namespace ${this.namespace}:`, error);
+      return { purgedCount: 0 };
+    }
+  }
 
   /**
    * Close the adapter

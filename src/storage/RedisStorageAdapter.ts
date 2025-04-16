@@ -2,6 +2,7 @@ import { StorageAdapter } from './StorageAdapter';
 import Redis from 'ioredis';
 import logger from '../utils/logger';
 import { Log, LogEntry, LogSearchOptions, PaginatedResult, BatchAppendResult } from '@neurallog/client-sdk/dist/types/api';
+import { LogMetadataService } from '../services/LogMetadataService';
 
 // Server namespace prefix for all keys
 const SERVER_NAMESPACE = 'logserver';
@@ -126,6 +127,10 @@ export class RedisStorageAdapter implements StorageAdapter {
       const logEntriesKey = this.getLogEntriesKey(logName);
       await this.client.sadd(logEntriesKey, logId);
 
+      // Store the creation timestamp in a sorted set for data retention
+      const timestampsKey = this.getTimestampsKey();
+      await this.client.zadd(timestampsKey, Date.now(), `${logName}:${logId}`);
+
       // If search tokens are provided, index them
       if (searchTokens && searchTokens.length > 0) {
         await this.indexSearchTokens(logName, logId, searchTokens);
@@ -247,6 +252,10 @@ export class RedisStorageAdapter implements StorageAdapter {
       // Remove from the entries set
       const logEntriesKey = this.getLogEntriesKey(logName);
       await this.client.srem(logEntriesKey, logId);
+
+      // Remove from the timestamps sorted set
+      const timestampsKey = this.getTimestampsKey();
+      await this.client.zrem(timestampsKey, `${logName}:${logId}`);
 
       // Log the operation
       logger.debug(`Deleted log entry ${logId} from ${logName}`);
@@ -691,6 +700,15 @@ export class RedisStorageAdapter implements StorageAdapter {
    */
   private getLogEntriesKey(logName: string): string {
     return this.getKey(`logs:${logName}:entries`);
+  }
+
+  /**
+   * Get the key for the timestamps sorted set
+   *
+   * @returns Redis key for the timestamps sorted set
+   */
+  private getTimestampsKey(): string {
+    return this.getKey(`timestamps`);
   }
 
 
@@ -1211,6 +1229,89 @@ export class RedisStorageAdapter implements StorageAdapter {
   }
 
   /**
+   * Purge expired logs
+   *
+   * @param cutoffTime Timestamp before which logs are considered expired
+   * @param batchSize Maximum number of logs to purge in one batch
+   * @returns Result of the purge operation
+   */
+  public async purgeExpiredLogs(cutoffTime: number, batchSize: number = 1000): Promise<{ purgedCount: number }> {
+    await this.ensureInitialized();
+
+    try {
+      // Find expired log entries
+      const timestampsKey = this.getTimestampsKey();
+      const expiredEntries = await this.client.zrangebyscore(
+        timestampsKey,
+        0,  // Min score (beginning of time)
+        cutoffTime,  // Max score (cutoff time)
+        'LIMIT', 0, batchSize  // Pagination
+      );
+
+      if (expiredEntries.length === 0) {
+        logger.info(`No expired logs found for namespace: ${this.namespace}`);
+        return { purgedCount: 0 };
+      }
+
+      logger.info(`Found ${expiredEntries.length} expired logs for namespace: ${this.namespace}`);
+
+      // Delete the expired log entries
+      let deletedCount = 0;
+
+      for (const entry of expiredEntries) {
+        try {
+          const [logName, logId] = entry.split(':');
+
+          // Delete the log entry
+          const logKey = this.getLogKey(logName, logId);
+          await this.client.del(logKey);
+
+          // Remove from the entries set
+          const logEntriesKey = this.getLogEntriesKey(logName);
+          await this.client.srem(logEntriesKey, logId);
+
+          // Remove from the timestamps sorted set
+          await this.client.zrem(timestampsKey, entry);
+
+          deletedCount++;
+        } catch (error) {
+          logger.error(`Error deleting log entry ${entry} for namespace ${this.namespace}:`, error);
+        }
+      }
+
+      logger.info(`Purged ${deletedCount} expired logs for namespace: ${this.namespace}`);
+
+      return { purgedCount: deletedCount };
+    } catch (error) {
+      logger.error(`Error purging expired logs for namespace ${this.namespace}:`, error);
+      return { purgedCount: 0 };
+    }
+  }
+
+  /**
+   * Count expired logs
+   *
+   * @param cutoffTime Timestamp before which logs are considered expired
+   * @returns Number of expired logs
+   */
+  public async countExpiredLogs(cutoffTime: number): Promise<number> {
+    await this.ensureInitialized();
+
+    try {
+      // Count all log entries created before the cutoff time
+      const timestampsKey = this.getTimestampsKey();
+      return await this.client.zcount(
+        timestampsKey,
+        0,  // Min score (beginning of time)
+        cutoffTime  // Max score (cutoff time)
+      );
+    } catch (error) {
+      logger.error(`Error counting expired logs for namespace ${this.namespace}:`, error);
+      return 0;
+    }
+  }
+
+  /**
    * Close the adapter
    * This is used to clean up resources when the adapter is no longer needed
    */
@@ -1219,6 +1320,4 @@ export class RedisStorageAdapter implements StorageAdapter {
     this.initialized = false;
     logger.info(`Redis storage adapter closed for ${SERVER_NAMESPACE}:${this.namespace}`);
   }
-
-
 }
