@@ -1,6 +1,7 @@
 import { AuthClient } from '../../src/services/AuthClient';
 import { AuthService } from '@neurallog/client-sdk';
 import { DiscoveryService } from '../../src/services/DiscoveryService';
+import { CacheService } from '../../src/services/CacheService';
 
 // Mock the DiscoveryService
 jest.mock('../../src/services/DiscoveryService', () => {
@@ -8,6 +9,23 @@ jest.mock('../../src/services/DiscoveryService', () => {
     DiscoveryService: {
       getInstance: jest.fn().mockReturnValue({
         getAuthUrl: jest.fn().mockResolvedValue('http://localhost:3000')
+      })
+    }
+  };
+});
+
+// Mock the CacheService
+jest.mock('../../src/services/CacheService', () => {
+  return {
+    CacheService: {
+      getInstance: jest.fn().mockReturnValue({
+        get: jest.fn().mockReturnValue(undefined),
+        set: jest.fn(),
+        delete: jest.fn(),
+        clear: jest.fn(),
+        getOrCompute: jest.fn().mockImplementation(async (key, factory) => {
+          return await factory();
+        })
       })
     }
   };

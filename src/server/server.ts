@@ -4,9 +4,7 @@ import bodyParser from 'body-parser';
 import logger from '../utils/logger';
 import routes from './routes';
 import { setupSwagger } from '../utils/swagger';
-import { tokenAuthMiddleware } from '../middleware/tokenAuthMiddleware';
-import { apiKeyAuthMiddleware } from '../middleware/apiKeyAuthMiddleware';
-import { resourceTokenAuthMiddleware } from '../middleware/resourceTokenAuthMiddleware';
+import { authMiddleware } from '../middleware/authMiddleware';
 
 /**
  * NeuralLog server
@@ -42,9 +40,7 @@ export class Server {
     setupSwagger(this.app);
 
     // Add authentication middleware
-    this.app.use(tokenAuthMiddleware);
-    this.app.use(resourceTokenAuthMiddleware);
-    this.app.use(apiKeyAuthMiddleware);
+    this.app.use(authMiddleware);
 
     // Configure routes
     this.app.use('/', routes);

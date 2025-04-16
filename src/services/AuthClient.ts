@@ -2,9 +2,13 @@ import { AuthService } from '@neurallog/client-sdk';
 import axios from 'axios';
 import logger from '../utils/logger';
 import { DiscoveryService } from './DiscoveryService';
+import { CacheService } from './CacheService';
 
 // Get the discovery service
 const discoveryService = DiscoveryService.getInstance();
+
+// Get the cache service
+const cacheService = CacheService.getInstance();
 
 /**
  * Client for the auth service using the client-sdk
@@ -67,21 +71,32 @@ export class AuthClient {
     tenantId?: string;
     resource?: string;
   }> {
-    try {
-      // Use the client-sdk to verify the token
-      const result = await this.authService.verifyResourceToken(token);
+    // Create a cache key based on the token
+    const cacheKey = `resource_token:${token}`;
 
-      // Return the verification result
-      return {
-        valid: result.valid,
-        userId: result.userId,
-        tenantId: result.tenantId,
-        resource: result.resource
-      };
-    } catch (error) {
-      logger.error('Error verifying resource token:', error);
-      return { valid: false };
-    }
+    // Try to get the result from cache first
+    return await cacheService.getOrCompute(
+      cacheKey,
+      async () => {
+        try {
+          // Use the client-sdk to verify the token
+          const result = await this.authService.verifyResourceToken(token);
+
+          // Return the verification result
+          return {
+            valid: result.valid,
+            userId: result.userId,
+            tenantId: result.tenantId,
+            resource: result.resource
+          };
+        } catch (error) {
+          logger.error('Error verifying resource token:', error);
+          return { valid: false };
+        }
+      },
+      // Cache valid tokens for 5 minutes, invalid tokens for 1 minute
+      300000
+    );
   }
 
   /**
@@ -95,29 +110,40 @@ export class AuthClient {
     valid: boolean;
     userId?: string;
   }> {
-    try {
-      // Use the client-sdk to verify the API key
-      const valid = await this.authService.validateApiKey(apiKey);
+    // Create a cache key based on the API key and tenant ID
+    const cacheKey = `api_key:${apiKey}:${tenantId}`;
 
-      if (!valid) {
-        return { valid: false };
-      }
+    // Try to get the result from cache first
+    return await cacheService.getOrCompute(
+      cacheKey,
+      async () => {
+        try {
+          // Use the client-sdk to verify the API key
+          const valid = await this.authService.validateApiKey(apiKey);
 
-      // Get API key metadata
-      const metadata = await this.getApiKeyMetadata(apiKey.split('.')[0], tenantId);
+          if (!valid) {
+            return { valid: false };
+          }
 
-      if (metadata.error || !metadata.apiKey) {
-        return { valid: false };
-      }
+          // Get API key metadata
+          const metadata = await this.getApiKeyMetadata(apiKey.split('.')[0], tenantId);
 
-      return {
-        valid: true,
-        userId: metadata.apiKey.userId
-      };
-    } catch (error) {
-      logger.error('Error verifying API key:', error);
-      return { valid: false };
-    }
+          if (metadata.error || !metadata.apiKey) {
+            return { valid: false };
+          }
+
+          return {
+            valid: true,
+            userId: metadata.apiKey.userId
+          };
+        } catch (error) {
+          logger.error('Error verifying API key:', error);
+          return { valid: false };
+        }
+      },
+      // Cache valid API keys for 5 minutes, invalid API keys for 1 minute
+      300000
+    );
   }
 
   /**
@@ -131,25 +157,36 @@ export class AuthClient {
     apiKey?: any;
     error?: string;
   }> {
-    try {
-      // Make a direct call to the auth service to get API key metadata
-      const response = await axios.get(
-        `${this.authService.getBaseUrl()}/api/apikeys/${keyId}`,
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'x-tenant-id': tenantId
-          }
-        }
-      );
+    // Create a cache key based on the key ID and tenant ID
+    const cacheKey = `api_key_metadata:${keyId}:${tenantId}`;
 
-      return {
-        apiKey: response.data
-      };
-    } catch (error) {
-      logger.error('Error getting API key metadata:', error);
-      return { error: error instanceof Error ? error.message : String(error) };
-    }
+    // Try to get the result from cache first
+    return await cacheService.getOrCompute(
+      cacheKey,
+      async () => {
+        try {
+          // Make a direct call to the auth service to get API key metadata
+          const response = await axios.get(
+            `${this.authService.getBaseUrl()}/api/apikeys/${keyId}`,
+            {
+              headers: {
+                'Content-Type': 'application/json',
+                'x-tenant-id': tenantId
+              }
+            }
+          );
+
+          return {
+            apiKey: response.data
+          };
+        } catch (error) {
+          logger.error('Error getting API key metadata:', error);
+          return { error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+      // Cache API key metadata for 5 minutes
+      300000
+    );
   }
 
   /**
@@ -161,13 +198,24 @@ export class AuthClient {
    * @returns Promise that resolves to true if the user has permission
    */
   public async checkPermission(token: string, action: string, resource: string): Promise<boolean> {
-    try {
-      // Use the client-sdk to check permission
-      return await this.authService.checkPermission(token, action, resource);
-    } catch (error) {
-      logger.error('Error checking permission:', error);
-      return false;
-    }
+    // Create a cache key based on the token, action, and resource
+    const cacheKey = `permission:${token}:${action}:${resource}`;
+
+    // Try to get the result from cache first
+    return await cacheService.getOrCompute(
+      cacheKey,
+      async () => {
+        try {
+          // Use the client-sdk to check permission
+          return await this.authService.checkPermission(token, action, resource);
+        } catch (error) {
+          logger.error('Error checking permission:', error);
+          return false;
+        }
+      },
+      // Cache permission checks for 5 minutes
+      300000
+    );
   }
 }
 
