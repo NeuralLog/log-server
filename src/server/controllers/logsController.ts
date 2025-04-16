@@ -4,7 +4,7 @@ import { StorageAdapter } from '../../storage/StorageAdapter';
 import { StorageAdapterFactory } from '../../storage/StorageAdapterFactory';
 import { NamespacedStorageAdapterFactory } from '../../storage/NamespacedStorageAdapterFactory';
 import { v4 as uuidv4 } from 'uuid';
-import { LogEntry } from '@neurallog/shared';
+import { LogEntry, Log, PaginatedResult } from '../../types';
 
 // Get configuration from environment variables
 const DEFAULT_NAMESPACE = process.env.DEFAULT_NAMESPACE || 'default';
@@ -123,8 +123,8 @@ export const overwriteLog = async (req: Request, res: Response): Promise<void> =
     // Store the encrypted data
     await namespaceStorage.storeLogEntry(logId, logName, encryptedData, searchTokens);
 
-    res.json({
-      status: 'success',
+    // Return the created log entry
+    res.status(201).json({
       logId,
       namespace
     });
@@ -160,8 +160,8 @@ export const appendToLog = async (req: Request, res: Response): Promise<void> =>
     // Store the encrypted data
     await namespaceStorage.storeLogEntry(logId, logName, encryptedData, searchTokens);
 
-    res.json({
-      status: 'success',
+    // Return the created log entry
+    res.status(201).json({
       logId,
       namespace
     });
@@ -191,12 +191,17 @@ export const getLogByName = async (req: Request, res: Response): Promise<void> =
     // Get logs by name
     const entries = await namespaceStorage.getLogsByName(logName, limit);
 
-    res.json({
-      status: 'success',
-      name: logName,
-      namespace,
-      entries
-    });
+    // Return the log entries as a paginated result
+    const paginatedResult: PaginatedResult<LogEntry> = {
+      items: entries,
+      total: entries.length,
+      entries: entries,
+      totalCount: entries.length,
+      limit,
+      offset: 0,
+      hasMore: false
+    };
+    res.status(200).json(paginatedResult);
   } catch (error) {
     logger.error(`Error getting log: ${error instanceof Error ? error.message : String(error)}`);
     res.status(500).json({
@@ -222,11 +227,8 @@ export const getLogs = async (req: Request, res: Response): Promise<void> => {
     // Get all log names
     const logNames = await namespaceStorage.getLogNames(limit);
 
-    res.json({
-      status: 'success',
-      namespace,
-      logs: logNames
-    });
+    // Return the log names
+    res.status(200).json(logNames);
   } catch (error) {
     logger.error(`Error getting log names: ${error instanceof Error ? error.message : String(error)}`);
     res.status(500).json({
@@ -252,11 +254,8 @@ export const clearLog = async (req: Request, res: Response): Promise<void> => {
     // Clear the log
     const success = await namespaceStorage.clearLog(logName);
 
-    res.json({
-      status: 'success',
-      namespace,
-      cleared: success
-    });
+    // Return 204 No Content for successful deletion
+    res.status(204).end();
   } catch (error) {
     logger.error(`Error clearing log: ${error instanceof Error ? error.message : String(error)}`);
     res.status(500).json({
@@ -283,11 +282,8 @@ export const getLogEntryById = async (req: Request, res: Response): Promise<void
     const entry = await namespaceStorage.getLogEntryById(logName, logId);
 
     if (entry) {
-      res.json({
-        status: 'success',
-        namespace,
-        entry
-      });
+      // Return the log entry
+      res.status(200).json(entry);
     } else {
       res.status(404).json({
         status: 'error',
@@ -324,11 +320,8 @@ export const updateLogEntryById = async (req: Request, res: Response): Promise<v
     const success = await namespaceStorage.updateLogEntryById(logName, logId, data);
 
     if (success) {
-      res.json({
-        status: 'success',
-        namespace,
-        message: `Log entry ${logId} updated in log ${logName}`
-      });
+      // Return 204 No Content for successful update
+      res.status(204).end();
     } else {
       res.status(404).json({
         status: 'error',
@@ -361,11 +354,8 @@ export const deleteLogEntryById = async (req: Request, res: Response): Promise<v
     const success = await namespaceStorage.deleteLogEntryById(logName, logId);
 
     if (success) {
-      res.json({
-        status: 'success',
-        namespace,
-        message: `Log entry ${logId} deleted from log ${logName}`
-      });
+      // Return 204 No Content for successful deletion
+      res.status(204).end();
     } else {
       res.status(404).json({
         status: 'error',
@@ -398,8 +388,6 @@ export const searchLogs = async (req: Request, res: Response): Promise<void> => 
     const {
       query,
       log_name: logName,
-      start_time: startTime,
-      end_time: endTime,
       limit: limitStr,
       namespace: _, // Exclude namespace from otherParams
       ...otherParams
@@ -421,18 +409,14 @@ export const searchLogs = async (req: Request, res: Response): Promise<void> => 
     const results = await namespaceStorage.searchLogs({
       query: query as string,
       logName: logName as string,
-      startTime: startTime as string,
-      endTime: endTime as string,
       fieldFilters: Object.keys(fieldFilters).length > 0 ? fieldFilters : undefined,
       limit
     });
 
-    // Return the results
-    res.json({
-      status: 'success',
-      namespace,
-      total: results.length,
-      results
+    // Return the search results
+    res.status(200).json({
+      results,
+      total: results.length
     });
   } catch (error) {
     logger.error(`Error searching logs: ${error instanceof Error ? error.message : String(error)}`);
@@ -443,74 +427,4 @@ export const searchLogs = async (req: Request, res: Response): Promise<void> => 
   }
 };
 
-/**
- * Get aggregate statistics for all logs
- */
-export const getAggregateStatistics = async (req: Request, res: Response): Promise<void> => {
-  try {
-    // Extract namespace parameter
-    const namespace = req.query.namespace as string || DEFAULT_NAMESPACE;
 
-    logger.info(`Getting aggregate statistics, namespace: ${namespace}`);
-
-    // Get the storage adapter for this namespace
-    const namespaceStorage = NamespacedStorageAdapterFactory.getAdapter(namespace, storageOptions);
-
-    // Get statistics directly from the storage adapter
-    const statistics = await namespaceStorage.getAggregateStatistics();
-
-    // Return the statistics
-    res.json({
-      status: 'success',
-      namespace,
-      ...statistics
-    });
-  } catch (error) {
-    logger.error(`Error getting aggregate statistics: ${error instanceof Error ? error.message : String(error)}`);
-    res.status(500).json({
-      status: 'error',
-      error: error instanceof Error ? error.message : String(error)
-    });
-  }
-};
-
-/**
- * Get statistics for a specific log
- */
-export const getLogStatistics = async (req: Request, res: Response): Promise<void> => {
-  try {
-    // Extract parameters
-    const { logName } = req.params;
-    const namespace = req.query.namespace as string || DEFAULT_NAMESPACE;
-
-    logger.info(`Getting statistics for log: ${logName}, namespace: ${namespace}`);
-
-    // Get the storage adapter for this namespace
-    const namespaceStorage = NamespacedStorageAdapterFactory.getAdapter(namespace, storageOptions);
-
-    // Get statistics directly from the storage adapter
-    const statistics = await namespaceStorage.getLogStatistics(logName);
-
-    // Check if log exists
-    if (!statistics) {
-      res.status(404).json({
-        status: 'error',
-        error: `Log ${logName} not found or has no entries (namespace: ${namespace})`
-      });
-      return;
-    }
-
-    // Return the statistics
-    res.json({
-      status: 'success',
-      namespace,
-      ...statistics
-    });
-  } catch (error) {
-    logger.error(`Error getting log statistics: ${error instanceof Error ? error.message : String(error)}`);
-    res.status(500).json({
-      status: 'error',
-      error: error instanceof Error ? error.message : String(error)
-    });
-  }
-};

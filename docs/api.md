@@ -408,83 +408,7 @@ Authorization: Bearer <token>
 }
 ```
 
-### Statistics
 
-#### GET /api/statistics
-
-Get aggregate statistics for all logs.
-
-**Request**
-
-```http
-GET /api/statistics HTTP/1.1
-Authorization: Bearer <token>
-```
-
-**Query Parameters**
-
-- `namespace` (optional): Namespace to get statistics for (default: "default")
-
-**Response**
-
-```json
-{
-  "status": "success",
-  "namespace": "default",
-  "statistics": {
-    "totalLogs": 3,
-    "totalEntries": 100,
-    "logStats": {
-      "application-logs": {
-        "count": 50,
-        "lastUpdated": "2023-01-01T00:00:00.000Z"
-      },
-      "system-logs": {
-        "count": 30,
-        "lastUpdated": "2023-01-01T00:00:00.000Z"
-      },
-      "security-logs": {
-        "count": 20,
-        "lastUpdated": "2023-01-01T00:00:00.000Z"
-      }
-    }
-  }
-}
-```
-
-#### GET /api/logs/:logName/statistics
-
-Get statistics for a specific log.
-
-**Request**
-
-```http
-GET /api/logs/application-logs/statistics HTTP/1.1
-Authorization: Bearer <token>
-```
-
-**Query Parameters**
-
-- `namespace` (optional): Namespace to get statistics for (default: "default")
-
-**Response**
-
-```json
-{
-  "status": "success",
-  "namespace": "default",
-  "name": "application-logs",
-  "statistics": {
-    "count": 50,
-    "lastUpdated": "2023-01-01T00:00:00.000Z",
-    "levelCounts": {
-      "info": 30,
-      "warn": 15,
-      "error": 5
-    }
-  }
-}
-```
 
 ## Namespace Support
 
@@ -510,12 +434,32 @@ The API supports Cross-Origin Resource Sharing (CORS) to allow browser-based app
 
 The current API version is v1. The API may be updated in the future with breaking changes. When this happens, a new version will be released, and the old version will be deprecated but still supported for a transition period.
 
-## Swagger Documentation
+## OpenAPI/Swagger Documentation
 
-The API is documented using Swagger. You can access the Swagger UI at:
+The API is documented using OpenAPI (formerly known as Swagger). You can access the Swagger UI at:
 
 ```
 http://<host>:<port>/api-docs
 ```
 
 This provides an interactive documentation where you can explore and test the API endpoints.
+
+### OpenAPI Schema as Single Source of Truth
+
+The OpenAPI schema serves as the single source of truth for the API. It defines all endpoints, request/response structures, and validation rules. The schema is located at `src/openapi.yaml` in the log-server repository.
+
+### TypeScript Type Generation
+
+TypeScript types for the API are automatically generated from the OpenAPI schema during the build process. These types are used by the client SDK to ensure type safety and consistency between the server and client.
+
+The generated types are located in the `typescript-client-sdk/src/types/api.ts` file and are used by both the log-server and client applications.
+
+### Updating the API
+
+When making changes to the API:
+
+1. Update the OpenAPI schema in `src/openapi.yaml`
+2. Run `npm run generate-api-types` to generate updated TypeScript types
+3. Update the implementation to match the new schema
+
+This ensures that the documentation, types, and implementation stay in sync.

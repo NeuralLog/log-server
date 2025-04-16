@@ -1,6 +1,7 @@
 import { StorageAdapter } from './StorageAdapter';
 import logger from '../utils/logger';
-import { LogEntry, LogStatistics, AggregateStatistics } from '@neurallog/shared';
+import { Log, LogEntry, LogSearchOptions, PaginatedResult, BatchAppendResult } from '@neurallog/client-sdk/dist/types/api';
+import { v4 as uuidv4 } from 'uuid';
 
 // Server namespace prefix for all data
 const SERVER_NAMESPACE = 'logserver';
@@ -14,19 +15,12 @@ export class MemoryStorageAdapter implements StorageAdapter {
   private initialized: boolean = false;
   private namespace: string;
 
-  // Statistics storage
-  private statistics: {
-    totalLogs: number;
-    totalEntries: number;
-    logStats: Map<string, {
-      entryCount: number;
-      firstEntryTimestamp?: number;
-      lastEntryTimestamp?: number;
-    }>;
-  } = {
-    totalLogs: 0,
-    totalEntries: 0,
-    logStats: new Map()
+  // Tenant logs storage
+  private tenantLogs: Map<string, Map<string, Log>> = new Map();
+  private ensureInitialized = async (): Promise<void> => {
+    if (!this.initialized) {
+      await this.initialize();
+    }
   };
 
   /**
@@ -60,54 +54,6 @@ export class MemoryStorageAdapter implements StorageAdapter {
   public async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    // Initialize statistics
-    this.statistics = {
-      totalLogs: 0,
-      totalEntries: 0,
-      logStats: new Map()
-    };
-
-    // Calculate initial statistics for existing logs
-    if (this.logs.size > 0) {
-      // Count logs
-      this.statistics.totalLogs = this.logs.size;
-
-      // Process each log
-      for (const [logName, entries] of this.logs.entries()) {
-        // Skip if no entries
-        if (!entries || entries.length === 0) continue;
-
-        // Count entries
-        const entryCount = entries.length;
-        this.statistics.totalEntries += entryCount;
-
-        // Find first and last entry timestamps
-        let firstEntryTimestamp: number | undefined;
-        let lastEntryTimestamp: number | undefined;
-
-        for (const entry of entries) {
-          const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : undefined;
-          if (timestamp) {
-            if (!firstEntryTimestamp || timestamp < firstEntryTimestamp) {
-              firstEntryTimestamp = timestamp;
-            }
-            if (!lastEntryTimestamp || timestamp > lastEntryTimestamp) {
-              lastEntryTimestamp = timestamp;
-            }
-          }
-        }
-
-        // Add log statistics
-        this.statistics.logStats.set(logName, {
-          entryCount,
-          firstEntryTimestamp,
-          lastEntryTimestamp
-        });
-      }
-
-      logger.info(`Initialized statistics: ${this.statistics.totalLogs} logs, ${this.statistics.totalEntries} entries`);
-    }
-
     this.initialized = true;
     logger.info(`Memory storage adapter initialized for ${SERVER_NAMESPACE}:${this.namespace}`);
   }
@@ -127,7 +73,7 @@ export class MemoryStorageAdapter implements StorageAdapter {
       // Create the log entry
       const entry: LogEntry = {
         id: logId,
-        name: logName,
+        logId: logName,
         data: encryptedData,
         timestamp: new Date().toISOString()
       };
@@ -135,16 +81,11 @@ export class MemoryStorageAdapter implements StorageAdapter {
       // Get or create the log array
       if (!this.logs.has(logName)) {
         this.logs.set(logName, []);
-        // Increment total logs count when a new log is created
-        this.statistics.totalLogs++;
       }
 
       // Add the entry to the log
       const logEntries = this.logs.get(logName)!;
       logEntries.push(entry);
-
-      // Update statistics
-      await this.updateStatisticsOnAdd(logName, entry);
 
       logger.info(`Stored log entry: ${logName}, ID: ${logId}, namespace: ${this.namespace}`);
     } catch (error) {
@@ -160,8 +101,10 @@ export class MemoryStorageAdapter implements StorageAdapter {
    * @param logId Log ID
    * @returns Log entry or null if not found
    */
-  public async getLogEntryById(logName: string, logId: string): Promise<any | null> {
+  public async getLogEntryById(logName: string, logId: string): Promise<LogEntry | null> {
     try {
+      await this.initialize();
+
       // Get the log entries
       const logEntries = this.logs.get(logName) || [];
 
@@ -204,18 +147,12 @@ export class MemoryStorageAdapter implements StorageAdapter {
         return false;
       }
 
-      // Save the old entry for statistics update
-      const oldEntry = { ...logEntries[index] };
-
       // Update the entry
       logEntries[index] = {
         ...logEntries[index],
         data: logData,
         timestamp: new Date().toISOString()
       };
-
-      // Update statistics
-      await this.updateStatisticsOnUpdate(logName, oldEntry, logEntries[index]);
 
       logger.info(`Updated log entry: ${logName}, ID: ${logId}, namespace: ${this.namespace}`);
       return true;
@@ -247,14 +184,8 @@ export class MemoryStorageAdapter implements StorageAdapter {
         return false;
       }
 
-      // Get the entry before removing it
-      const entry = logEntries[index];
-
       // Remove the entry
       logEntries.splice(index, 1);
-
-      // Update statistics
-      await this.updateStatisticsOnDelete(logName, entry);
 
       logger.info(`Deleted log entry: ${logName}, ID: ${logId}, namespace: ${this.namespace}`);
       return true;
@@ -276,10 +207,9 @@ export class MemoryStorageAdapter implements StorageAdapter {
       // Get the log entries
       const logEntries = this.logs.get(logName) || [];
 
-      // Sort by timestamp (newest first) and limit the number of entries
-      const sortedEntries = [...logEntries]
-        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-        .slice(0, limit);
+      // We don't sort by timestamp in a zero-knowledge system
+      // as timestamps are encrypted on the client side
+      const sortedEntries = [...logEntries].slice(0, limit);
 
       logger.info(`Retrieved ${sortedEntries.length} entries for log: ${logName}, namespace: ${this.namespace}`);
       return sortedEntries;
@@ -327,9 +257,6 @@ export class MemoryStorageAdapter implements StorageAdapter {
         return false;
       }
 
-      // Update statistics before clearing
-      await this.updateStatisticsOnClear(logName);
-
       // Clear the log
       this.logs.delete(logName);
 
@@ -348,6 +275,16 @@ export class MemoryStorageAdapter implements StorageAdapter {
   public async close(): Promise<void> {
     // Nothing to do for memory storage
   }
+
+
+
+
+
+
+
+
+
+
 
   /**
    * Search logs based on various criteria
@@ -383,8 +320,6 @@ export class MemoryStorageAdapter implements StorageAdapter {
       // Apply filters
       const filteredEntries = this.filterEntries(entries, {
         query,
-        startTime,
-        endTime,
         fieldFilters
       });
 
@@ -408,8 +343,6 @@ export class MemoryStorageAdapter implements StorageAdapter {
         // Apply filters
         const filteredEntries = this.filterEntries(entries, {
           query,
-          startTime,
-          endTime,
           fieldFilters
         });
 
@@ -442,33 +375,14 @@ export class MemoryStorageAdapter implements StorageAdapter {
    */
   private filterEntries(entries: any[], options: {
     query?: string;
-    startTime?: string;
-    endTime?: string;
     fieldFilters?: Record<string, any>;
   }): any[] {
     const {
       query,
-      startTime,
-      endTime,
       fieldFilters
     } = options;
 
     let filteredEntries = [...entries];
-
-    // Apply time filters
-    if (startTime) {
-      const startTimeMs = new Date(startTime).getTime();
-      filteredEntries = filteredEntries.filter(entry =>
-        new Date(entry.timestamp).getTime() >= startTimeMs
-      );
-    }
-
-    if (endTime) {
-      const endTimeMs = new Date(endTime).getTime();
-      filteredEntries = filteredEntries.filter(entry =>
-        new Date(entry.timestamp).getTime() <= endTimeMs
-      );
-    }
 
     // Apply field filters
     if (fieldFilters) {
@@ -515,220 +429,319 @@ export class MemoryStorageAdapter implements StorageAdapter {
   }
 
   /**
-   * Get aggregate statistics for all logs
+   * Create a new log
    *
-   * @returns Statistics object with total logs, total entries, and per-log statistics
+   * @param log Complete Log object
+   * @returns Created log
    */
-  public async getAggregateStatistics(): Promise<AggregateStatistics> {
+  public async createLog(log: Log): Promise<Log> {
     await this.initialize();
 
-    // Convert the Map to an array for the response
-    const logStats = Array.from(this.statistics.logStats.entries()).map(([logName, stats]) => ({
-      logName,
-      ...stats
-    }));
-
-    // Sort log stats by entry count (descending)
-    logStats.sort((a, b) => b.entryCount - a.entryCount);
-
-    return {
-      totalLogs: this.statistics.totalLogs,
-      totalEntries: this.statistics.totalEntries,
-      logStats
+    // Create the log with a new ID if not provided
+    const newLog: Log = {
+      ...log,
+      id: log.id || uuidv4(),
+      createdAt: log.createdAt || new Date().toISOString(),
+      updatedAt: log.updatedAt || new Date().toISOString()
     };
+
+    // Get or create tenant logs
+    const tenantId = log.tenantId;
+    if (!this.tenantLogs.has(tenantId)) {
+      this.tenantLogs.set(tenantId, new Map());
+    }
+
+    // Add the log to the tenant logs
+    this.tenantLogs.get(tenantId)!.set(newLog.name, newLog);
+
+    logger.info(`Created log ${newLog.name}`);
+    return newLog;
   }
 
   /**
-   * Get statistics for a specific log
+   * Get all logs
    *
-   * @param logName Log name
-   * @returns Statistics object for the specified log
+   * @returns Array of logs
    */
-  public async getLogStatistics(logName: string): Promise<LogStatistics | null> {
+  public async getLogs(): Promise<Log[]> {
     await this.initialize();
 
-    const stats = this.statistics.logStats.get(logName);
-    if (!stats) return null;
+    // Get all logs from all tenants
+    const allLogs: Log[] = [];
 
-    return {
-      logName,
-      ...stats
-    };
+    // Iterate through all tenant logs
+    for (const tenantLogs of this.tenantLogs.values()) {
+      allLogs.push(...Array.from(tenantLogs.values()));
+    }
+
+    return allLogs;
   }
 
   /**
-   * Update statistics for a log when an entry is added
+   * Get a log by name
+   *
+   * @param name Log name
+   * @returns Log or null if not found
+   */
+  public async getLog(name: string): Promise<Log | null> {
+    await this.initialize();
+
+    // Search for the log in all tenants
+    for (const tenantLogs of this.tenantLogs.values()) {
+      const log = tenantLogs.get(name);
+      if (log) {
+        return log;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Update a log
+   *
+   * @param log Complete Log object
+   * @returns Updated log
+   */
+  public async updateLog(log: Log): Promise<Log> {
+    await this.initialize();
+
+    const tenantId = log.tenantId;
+    const name = log.name;
+
+    // Get tenant logs
+    const tenantLogs = this.tenantLogs.get(tenantId);
+    if (!tenantLogs) {
+      throw new Error(`Tenant ${tenantId} not found`);
+    }
+
+    // Get the existing log
+    const existingLog = tenantLogs.get(name);
+    if (!existingLog) {
+      throw new Error(`Log ${name} not found`);
+    }
+
+    // Update the log
+    const updatedLog: Log = {
+      ...existingLog,
+      ...log,
+      updatedAt: new Date().toISOString()
+    };
+
+    // Save the updated log
+    tenantLogs.set(name, updatedLog);
+
+    logger.info(`Updated log ${name}`);
+    return updatedLog;
+  }
+
+  /**
+   * Delete a log
+   *
+   * @param name Log name
+   */
+  public async deleteLog(name: string): Promise<void> {
+    await this.initialize();
+
+    // Search for the log in all tenants
+    for (const [tenantId, tenantLogs] of this.tenantLogs.entries()) {
+      if (tenantLogs.has(name)) {
+        // Delete the log
+        tenantLogs.delete(name);
+        logger.info(`Deleted log ${name}`);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Append an entry to a log
    *
    * @param logName Log name
    * @param entry Log entry
+   * @returns ID of the new entry
    */
-  public async updateStatisticsOnAdd(logName: string, entry: LogEntry): Promise<void> {
+  public async appendLogEntry(logName: string, entry: LogEntry): Promise<string> {
     await this.initialize();
 
-    // Always increment total entries
-    this.statistics.totalEntries++;
+    // Generate an ID if not provided
+    const id = entry.id || uuidv4();
 
-    // Get or create log stats
-    let logStats = this.statistics.logStats.get(logName);
+    // Create the log entry
+    const logEntry: LogEntry = {
+      ...entry,
+      id,
+      logId: logName,
+      timestamp: entry.timestamp || new Date().toISOString()
+    };
 
-    // Create new stats object if it doesn't exist
-    if (!logStats) {
-      logStats = {
-        entryCount: 0, // Will be incremented below
-        firstEntryTimestamp: undefined,
-        lastEntryTimestamp: undefined
-      };
-      this.statistics.logStats.set(logName, logStats);
+    // Get or create the log array
+    if (!this.logs.has(logName)) {
+      this.logs.set(logName, []);
     }
 
-    // Always increment the entry count
-    logStats.entryCount++;
-    logStats.lastEntryTimestamp = new Date(entry.timestamp).getTime();
+    // Add the entry to the log
+    const logEntries = this.logs.get(logName)!;
+    logEntries.push(logEntry);
 
-    // Update timestamps
-    const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : undefined;
-    if (timestamp) {
-      if (!logStats.firstEntryTimestamp || timestamp < logStats.firstEntryTimestamp) {
-        logStats.firstEntryTimestamp = timestamp;
-      }
-      if (!logStats.lastEntryTimestamp || timestamp > logStats.lastEntryTimestamp) {
-        logStats.lastEntryTimestamp = timestamp;
-      }
-    }
+    logger.info(`Appended log entry to ${logName}`);
+    return id;
   }
 
   /**
-   * Update statistics for a log when an entry is updated
+   * Batch append entries to a log
    *
    * @param logName Log name
-   * @param oldEntry Old log entry
-   * @param newEntry New log entry
+   * @param entries Log entries
+   * @returns Result with IDs of the new entries
    */
-  public async updateStatisticsOnUpdate(logName: string, oldEntry: LogEntry, newEntry: LogEntry): Promise<void> {
+  public async batchAppendLogEntries(logName: string, entries: LogEntry[]): Promise<BatchAppendResult> {
     await this.initialize();
 
-    // Get log stats
-    const logStats = this.statistics.logStats.get(logName);
-    if (!logStats) return;
+    // Process each entry
+    const results: { id: string; timestamp: string }[] = [];
 
-    // Update timestamps if needed
-    const newTimestamp = newEntry.timestamp ? new Date(newEntry.timestamp).getTime() : undefined;
-    if (newTimestamp) {
-      // Check if we need to update the first entry timestamp
-      const oldTimestamp = oldEntry.timestamp ? new Date(oldEntry.timestamp).getTime() : undefined;
-      if (oldTimestamp && oldTimestamp === logStats.firstEntryTimestamp) {
-        // The updated entry was the first entry, recalculate
-        await this.recalculateLogStatistics(logName);
-        return;
-      }
-
-      // Check if we need to update the last entry timestamp
-      if (oldTimestamp && oldTimestamp === logStats.lastEntryTimestamp) {
-        // The updated entry was the last entry, recalculate
-        await this.recalculateLogStatistics(logName);
-        return;
-      }
-
-      // Check if the new timestamp becomes the first or last
-      if (!logStats.firstEntryTimestamp || newTimestamp < logStats.firstEntryTimestamp) {
-        logStats.firstEntryTimestamp = newTimestamp;
-      }
-      if (!logStats.lastEntryTimestamp || newTimestamp > logStats.lastEntryTimestamp) {
-        logStats.lastEntryTimestamp = newTimestamp;
-      }
-    }
-  }
-
-  /**
-   * Update statistics for a log when an entry is deleted
-   *
-   * @param logName Log name
-   * @param entry Log entry
-   */
-  public async updateStatisticsOnDelete(logName: string, entry: LogEntry): Promise<void> {
-    await this.initialize();
-
-    // Get log stats
-    const logStats = this.statistics.logStats.get(logName);
-    if (!logStats) return;
-
-    // Update entry count
-    logStats.entryCount--;
-    this.statistics.totalEntries--;
-
-    // If no more entries, remove the log stats
-    if (logStats.entryCount <= 0) {
-      this.statistics.logStats.delete(logName);
-      this.statistics.totalLogs--;
-      return;
-    }
-
-    // Check if we need to recalculate timestamps
-    const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : undefined;
-    if (timestamp && (timestamp === logStats.firstEntryTimestamp || timestamp === logStats.lastEntryTimestamp)) {
-      // The deleted entry was the first or last entry, recalculate
-      await this.recalculateLogStatistics(logName);
-    }
-  }
-
-  /**
-   * Update statistics for a log when it is cleared
-   *
-   * @param logName Log name
-   */
-  public async updateStatisticsOnClear(logName: string): Promise<void> {
-    await this.initialize();
-
-    // Get log stats
-    const logStats = this.statistics.logStats.get(logName);
-    if (!logStats) return;
-
-    // Update total entries
-    this.statistics.totalEntries -= logStats.entryCount;
-
-    // Remove the log stats
-    this.statistics.logStats.delete(logName);
-    this.statistics.totalLogs--;
-  }
-
-  /**
-   * Recalculate statistics for a log
-   *
-   * @param logName Log name
-   */
-  private async recalculateLogStatistics(logName: string): Promise<void> {
-    // Get log entries
-    const entries = this.logs.get(logName) || [];
-
-    // Get or create log stats
-    let logStats = this.statistics.logStats.get(logName);
-    if (!logStats) {
-      logStats = {
-        entryCount: 0,
-        firstEntryTimestamp: undefined,
-        lastEntryTimestamp: undefined
-      };
-      this.statistics.logStats.set(logName, logStats);
-    }
-
-    // Update entry count
-    logStats.entryCount = entries.length;
-
-    // Reset timestamps
-    logStats.firstEntryTimestamp = undefined;
-    logStats.lastEntryTimestamp = undefined;
-
-    // Recalculate timestamps
     for (const entry of entries) {
-      const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : undefined;
-      if (timestamp) {
-        if (!logStats.firstEntryTimestamp || timestamp < logStats.firstEntryTimestamp) {
-          logStats.firstEntryTimestamp = timestamp;
-        }
-        if (!logStats.lastEntryTimestamp || timestamp > logStats.lastEntryTimestamp) {
-          logStats.lastEntryTimestamp = timestamp;
-        }
+      // Generate an ID if not provided
+      const id = entry.id || uuidv4();
+
+      // Create the log entry
+      const logEntry: LogEntry = {
+        ...entry,
+        id,
+        logId: logName,
+        timestamp: entry.timestamp || new Date().toISOString()
+      };
+
+      // Get or create the log array
+      if (!this.logs.has(logName)) {
+        this.logs.set(logName, []);
       }
+
+      // Add the entry to the log
+      const logEntries = this.logs.get(logName)!;
+      logEntries.push(logEntry);
+
+      // Add to results
+      results.push({
+        id,
+        timestamp: logEntry.timestamp || ''
+      });
+    }
+
+    logger.info(`Batch appended ${entries.length} log entries to ${logName}`);
+    return { entries: results };
+  }
+
+  /**
+   * Get log entries
+   *
+   * @param logName Log name
+   * @param options Options for pagination
+   * @returns Paginated result of log entries
+   */
+  public async getLogEntries(logName: string, options: { limit?: number; offset?: number }): Promise<PaginatedResult<LogEntry>> {
+    await this.initialize();
+
+    // Get the log entries
+    const allEntries = this.logs.get(logName) || [];
+
+    // We don't sort by timestamp in a zero-knowledge system
+    // as timestamps are encrypted on the client side
+    const sortedEntries = [...allEntries];
+
+    // Apply pagination
+    const limit = options.limit || 100;
+    const offset = options.offset || 0;
+    const paginatedEntries = sortedEntries.slice(offset, offset + limit);
+
+    // Create the paginated result
+    const result: PaginatedResult<LogEntry> = {
+      items: paginatedEntries,
+      total: allEntries.length,
+      entries: paginatedEntries,
+      totalCount: allEntries.length,
+      limit,
+      offset,
+      hasMore: offset + limit < allEntries.length
+    };
+
+    logger.info(`Retrieved ${paginatedEntries.length} entries for log ${logName}`);
+    return result;
+  }
+
+  /**
+   * Get a log entry
+   *
+   * @param logName Log name
+   * @param entryId Entry ID
+   * @returns Log entry or null if not found
+   */
+  public async getLogEntry(logName: string, entryId: string): Promise<LogEntry | null> {
+    await this.initialize();
+
+    // Get the log entries
+    const logEntries = this.logs.get(logName) || [];
+
+    // Find the entry with the specified ID
+    const entry = logEntries.find(entry => entry.id === entryId);
+
+    if (entry) {
+      logger.info(`Retrieved log entry ${entryId} for log ${logName}`);
+      return entry;
+    } else {
+      logger.info(`Log entry ${entryId} not found for log ${logName}`);
+      return null;
     }
   }
+
+  /**
+   * Search log entries
+   *
+   * @param logName Log name
+   * @param options Search options
+   * @returns Paginated result of log entries
+   */
+  public async searchLogEntries(logName: string, options: LogSearchOptions): Promise<PaginatedResult<LogEntry>> {
+    await this.initialize();
+
+    // Get the log entries
+    const allEntries = this.logs.get(logName) || [];
+
+    // Apply filters
+    let filteredEntries = [...allEntries];
+
+    // Apply query filter
+    if (options.query) {
+      const query = options.query.toLowerCase();
+      filteredEntries = filteredEntries.filter(entry =>
+        JSON.stringify(entry).toLowerCase().includes(query)
+      );
+    }
+
+    // We don't sort by timestamp in a zero-knowledge system
+    // as timestamps are encrypted on the client side
+    const sortedEntries = filteredEntries;
+
+    // Apply pagination
+    const limit = options.limit || 100;
+    const offset = options.offset || 0;
+    const paginatedEntries = sortedEntries.slice(offset, offset + limit);
+
+    // Create the paginated result
+    const result: PaginatedResult<LogEntry> = {
+      items: paginatedEntries,
+      total: filteredEntries.length,
+      entries: paginatedEntries,
+      totalCount: filteredEntries.length,
+      limit,
+      offset,
+      hasMore: offset + limit < filteredEntries.length
+    };
+
+    logger.info(`Search returned ${paginatedEntries.length} results for log ${logName}`);
+    return result;
+  }
+
+
 }

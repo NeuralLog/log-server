@@ -1,176 +1,50 @@
-import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
 import express from 'express';
+import * as OpenAPIValidator from 'express-openapi-validator';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as yaml from 'js-yaml';
+import logger from './logger';
 
-// Swagger definition
-const swaggerOptions: swaggerJsdoc.Options = {
-  definition: {
-    openapi: '3.0.0',
-    info: {
-      title: 'NeuralLog API',
-      version: '1.0.0',
-      description: 'API documentation for the NeuralLog server',
-      license: {
-        name: 'MIT',
-        url: 'https://opensource.org/licenses/MIT',
-      },
-      contact: {
-        name: 'NeuralLog Support',
-        url: 'https://github.com/NeuralLog/server',
-      },
-    },
-    servers: [
-      {
-        url: '/',
-        description: 'Local server',
-      },
-    ],
-    components: {
-      schemas: {
-        LogEntry: {
-          type: 'object',
-          properties: {
-            id: {
-              type: 'string',
-              description: 'Unique identifier for the log entry',
-            },
-            timestamp: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Timestamp when the log entry was created',
-            },
-            data: {
-              type: 'object',
-              description: 'Log entry data',
-            },
-          },
-        },
-        LogResponse: {
-          type: 'object',
-          properties: {
-            status: {
-              type: 'string',
-              enum: ['success', 'error'],
-              description: 'Response status',
-            },
-            name: {
-              type: 'string',
-              description: 'Log name',
-            },
-            namespace: {
-              type: 'string',
-              description: 'Namespace',
-            },
-            entries: {
-              type: 'array',
-              items: {
-                $ref: '#/components/schemas/LogEntry',
-              },
-              description: 'Log entries',
-            },
-          },
-        },
-        LogsResponse: {
-          type: 'object',
-          properties: {
-            status: {
-              type: 'string',
-              enum: ['success', 'error'],
-              description: 'Response status',
-            },
-            namespace: {
-              type: 'string',
-              description: 'Namespace',
-            },
-            logs: {
-              type: 'array',
-              items: {
-                type: 'string',
-              },
-              description: 'List of log names',
-            },
-          },
-        },
-        LogStatistics: {
-          type: 'object',
-          properties: {
-            totalLogs: {
-              type: 'number',
-              description: 'Total number of logs',
-            },
-            totalEntries: {
-              type: 'number',
-              description: 'Total number of log entries',
-            },
-            lastUpdated: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Timestamp of the last update',
-            },
-            dailyStats: {
-              type: 'object',
-              additionalProperties: {
-                type: 'number',
-              },
-              description: 'Daily statistics',
-            },
-          },
-        },
-      },
-      parameters: {
-        logNameParam: {
-          name: 'logName',
-          in: 'path',
-          required: true,
-          schema: {
-            type: 'string',
-          },
-          description: 'Name of the log',
-        },
-        logIdParam: {
-          name: 'logId',
-          in: 'path',
-          required: true,
-          schema: {
-            type: 'string',
-          },
-          description: 'ID of the log entry',
-        },
-        namespaceParam: {
-          name: 'namespace',
-          in: 'query',
-          schema: {
-            type: 'string',
-            default: 'default',
-          },
-          description: 'Namespace for the log',
-        },
-        limitParam: {
-          name: 'limit',
-          in: 'query',
-          schema: {
-            type: 'integer',
-            default: 100,
-          },
-          description: 'Maximum number of entries to return',
-        },
-      },
-    },
-  },
-  apis: [__dirname + '/../server/controllers/*.ts', __dirname + '/../server/routes.ts'],
-};
+// Load OpenAPI spec from file
+const openApiPath = path.join(__dirname, '..', 'openapi.yaml');
+const openApiSpec = yaml.load(fs.readFileSync(openApiPath, 'utf8')) as Record<string, any>;
 
-// Initialize swagger-jsdoc
-const swaggerSpec = swaggerJsdoc(swaggerOptions);
-
-// Function to setup Swagger
+// Function to setup Swagger and OpenAPI validation
 export const setupSwagger = (app: express.Application): void => {
   // Serve swagger docs
-  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
 
   // Serve swagger spec as JSON
-  app.get('/swagger.json', (req, res) => {
+  app.get('/swagger.json', (_req, res) => {
     res.setHeader('Content-Type', 'application/json');
-    res.send(swaggerSpec);
+    res.send(openApiSpec);
+  });
+
+  // Setup OpenAPI validation
+  app.use(
+    OpenAPIValidator.middleware({
+      apiSpec: openApiPath,
+      validateRequests: true,
+      validateResponses: true,
+      operationHandlers: false,
+    })
+  );
+
+  // Add error handler for validation errors
+  app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    // Format validation errors
+    if (err.status === 400 && err.errors) {
+      logger.error(`Validation error: ${JSON.stringify(err.errors)}`);
+      return res.status(400).json({
+        status: 'error',
+        message: 'Validation error',
+        errors: err.errors,
+        code: 'validation_error'
+      });
+    }
+
+    // Pass other errors to the next handler
+    next(err);
   });
 };

@@ -1,9 +1,8 @@
 import { Request, Response } from 'express';
 import { LogService } from '../services/LogService';
 import { AuthService } from '../services/AuthService';
-import { logger } from '../utils/logger';
-import { validateRequest } from '../utils/validation';
-import { z } from 'zod';
+import logger from '../utils/logger';
+import { Log, LogEntry, LogSearchOptions, PaginatedResult } from '@neurallog/client-sdk';
 
 /**
  * Controller for log-related operations
@@ -14,7 +13,7 @@ export class LogController {
 
   /**
    * Create a new LogController
-   * 
+   *
    * @param logService Log service
    * @param authService Auth service
    */
@@ -25,22 +24,12 @@ export class LogController {
 
   /**
    * Create a new log
-   * 
+   *
    * @param req Express request
    * @param res Express response
    */
   public createLog = async (req: Request, res: Response): Promise<void> => {
     try {
-      // Validate request
-      const schema = z.object({
-        name: z.string(),
-        description: z.string().optional(),
-        retentionDays: z.number().positive().optional(),
-        encryptionEnabled: z.boolean().optional()
-      });
-
-      const validatedData = validateRequest(req.body, schema);
-      
       // Get tenant ID from request
       const tenantId = req.headers['x-tenant-id'] as string;
       if (!tenantId) {
@@ -51,7 +40,7 @@ export class LogController {
         });
         return;
       }
-      
+
       // Verify the user has permission to create logs
       const token = req.headers.authorization?.split(' ')[1];
       if (!token) {
@@ -62,7 +51,7 @@ export class LogController {
         });
         return;
       }
-      
+
       const userInfo = await this.authService.validateToken(token);
       if (!userInfo) {
         res.status(401).json({
@@ -72,14 +61,14 @@ export class LogController {
         });
         return;
       }
-      
+
       // Check if the user has permission to create logs
       const hasPermission = await this.authService.checkPermission(
         token,
         'create',
         `logs`
       );
-      
+
       if (!hasPermission) {
         res.status(403).json({
           status: 'error',
@@ -88,22 +77,13 @@ export class LogController {
         });
         return;
       }
-      
-      // Create the log
-      const log = await this.logService.createLog(
-        tenantId,
-        validatedData.name,
-        {
-          description: validatedData.description,
-          retentionDays: validatedData.retentionDays,
-          encryptionEnabled: validatedData.encryptionEnabled
-        }
-      );
-      
-      res.status(201).json({
-        status: 'success',
-        log
-      });
+
+      // Pass the log data directly from the wire protocol
+      // The OpenAPI validator has already validated the request body
+      const log = await this.logService.createLog(req.body);
+
+      // Return the created log
+      res.status(201).json(log);
     } catch (error) {
       logger.error('Error creating log:', error);
       res.status(500).json({
@@ -116,7 +96,7 @@ export class LogController {
 
   /**
    * Get logs
-   * 
+   *
    * @param req Express request
    * @param res Express response
    */
@@ -132,7 +112,7 @@ export class LogController {
         });
         return;
       }
-      
+
       // Verify the user has permission to get logs
       const token = req.headers.authorization?.split(' ')[1];
       if (!token) {
@@ -143,7 +123,7 @@ export class LogController {
         });
         return;
       }
-      
+
       const userInfo = await this.authService.validateToken(token);
       if (!userInfo) {
         res.status(401).json({
@@ -153,14 +133,14 @@ export class LogController {
         });
         return;
       }
-      
+
       // Check if the user has permission to get logs
       const hasPermission = await this.authService.checkPermission(
         token,
         'read',
         `logs`
       );
-      
+
       if (!hasPermission) {
         res.status(403).json({
           status: 'error',
@@ -169,14 +149,12 @@ export class LogController {
         });
         return;
       }
-      
+
       // Get the logs
-      const logs = await this.logService.getLogs(tenantId);
-      
-      res.status(200).json({
-        status: 'success',
-        logs
-      });
+      const logs = await this.logService.getLogs();
+
+      // Return the logs
+      res.status(200).json(logs);
     } catch (error) {
       logger.error('Error getting logs:', error);
       res.status(500).json({
@@ -189,7 +167,7 @@ export class LogController {
 
   /**
    * Get a log by name
-   * 
+   *
    * @param req Express request
    * @param res Express response
    */
@@ -205,7 +183,7 @@ export class LogController {
         });
         return;
       }
-      
+
       // Get tenant ID from request
       const tenantId = req.headers['x-tenant-id'] as string;
       if (!tenantId) {
@@ -216,7 +194,7 @@ export class LogController {
         });
         return;
       }
-      
+
       // Verify the user has permission to get the log
       const token = req.headers.authorization?.split(' ')[1];
       if (!token) {
@@ -227,7 +205,7 @@ export class LogController {
         });
         return;
       }
-      
+
       const userInfo = await this.authService.validateToken(token);
       if (!userInfo) {
         res.status(401).json({
@@ -237,14 +215,14 @@ export class LogController {
         });
         return;
       }
-      
+
       // Check if the user has permission to get the log
       const hasPermission = await this.authService.checkPermission(
         token,
         'read',
         `logs/${logName}`
       );
-      
+
       if (!hasPermission) {
         res.status(403).json({
           status: 'error',
@@ -253,14 +231,12 @@ export class LogController {
         });
         return;
       }
-      
+
       // Get the log
-      const log = await this.logService.getLog(tenantId, logName);
-      
-      res.status(200).json({
-        status: 'success',
-        log
-      });
+      const log = await this.logService.getLog(logName);
+
+      // Return the log
+      res.status(200).json(log);
     } catch (error) {
       logger.error('Error getting log:', error);
       res.status(500).json({
@@ -273,7 +249,7 @@ export class LogController {
 
   /**
    * Update a log
-   * 
+   *
    * @param req Express request
    * @param res Express response
    */
@@ -289,16 +265,7 @@ export class LogController {
         });
         return;
       }
-      
-      // Validate request
-      const schema = z.object({
-        description: z.string().optional(),
-        retentionDays: z.number().positive().optional(),
-        encryptionEnabled: z.boolean().optional()
-      });
 
-      const validatedData = validateRequest(req.body, schema);
-      
       // Get tenant ID from request
       const tenantId = req.headers['x-tenant-id'] as string;
       if (!tenantId) {
@@ -309,7 +276,7 @@ export class LogController {
         });
         return;
       }
-      
+
       // Verify the user has permission to update the log
       const token = req.headers.authorization?.split(' ')[1];
       if (!token) {
@@ -320,7 +287,7 @@ export class LogController {
         });
         return;
       }
-      
+
       const userInfo = await this.authService.validateToken(token);
       if (!userInfo) {
         res.status(401).json({
@@ -330,14 +297,14 @@ export class LogController {
         });
         return;
       }
-      
+
       // Check if the user has permission to update the log
       const hasPermission = await this.authService.checkPermission(
         token,
         'update',
         `logs/${logName}`
       );
-      
+
       if (!hasPermission) {
         res.status(403).json({
           status: 'error',
@@ -346,18 +313,28 @@ export class LogController {
         });
         return;
       }
-      
-      // Update the log
-      const log = await this.logService.updateLog(
-        tenantId,
-        logName,
-        validatedData
-      );
-      
-      res.status(200).json({
-        status: 'success',
-        log
+
+      // Get the existing log
+      const existingLog = await this.logService.getLog(logName);
+      if (!existingLog) {
+        res.status(404).json({
+          status: 'error',
+          message: 'Log not found',
+          code: 'log_not_found'
+        });
+        return;
+      }
+
+      // Pass the update data directly from the wire protocol
+      // The OpenAPI validator has already validated the request body
+      const log = await this.logService.updateLog({
+        ...existingLog,
+        ...req.body,
+        name: logName // Ensure the name doesn't change
       });
+
+      // Return the updated log
+      res.status(200).json(log);
     } catch (error) {
       logger.error('Error updating log:', error);
       res.status(500).json({
@@ -370,7 +347,7 @@ export class LogController {
 
   /**
    * Delete a log
-   * 
+   *
    * @param req Express request
    * @param res Express response
    */
@@ -386,7 +363,7 @@ export class LogController {
         });
         return;
       }
-      
+
       // Get tenant ID from request
       const tenantId = req.headers['x-tenant-id'] as string;
       if (!tenantId) {
@@ -397,7 +374,7 @@ export class LogController {
         });
         return;
       }
-      
+
       // Verify the user has permission to delete the log
       const token = req.headers.authorization?.split(' ')[1];
       if (!token) {
@@ -408,7 +385,7 @@ export class LogController {
         });
         return;
       }
-      
+
       const userInfo = await this.authService.validateToken(token);
       if (!userInfo) {
         res.status(401).json({
@@ -418,14 +395,14 @@ export class LogController {
         });
         return;
       }
-      
+
       // Check if the user has permission to delete the log
       const hasPermission = await this.authService.checkPermission(
         token,
         'delete',
         `logs/${logName}`
       );
-      
+
       if (!hasPermission) {
         res.status(403).json({
           status: 'error',
@@ -434,14 +411,12 @@ export class LogController {
         });
         return;
       }
-      
+
       // Delete the log
-      await this.logService.deleteLog(tenantId, logName);
-      
-      res.status(200).json({
-        status: 'success',
-        message: 'Log deleted successfully'
-      });
+      await this.logService.deleteLog(logName);
+
+      // Return 204 No Content for successful deletion
+      res.status(204).end();
     } catch (error) {
       logger.error('Error deleting log:', error);
       res.status(500).json({
@@ -454,7 +429,7 @@ export class LogController {
 
   /**
    * Append a log entry
-   * 
+   *
    * @param req Express request
    * @param res Express response
    */
@@ -470,19 +445,7 @@ export class LogController {
         });
         return;
       }
-      
-      // Validate request
-      const schema = z.object({
-        data: z.any(),
-        searchTokens: z.array(z.string()).optional(),
-        encryptionInfo: z.object({
-          version: z.string(),
-          algorithm: z.string()
-        }).optional()
-      });
 
-      const validatedData = validateRequest(req.body, schema);
-      
       // Get tenant ID from request
       const tenantId = req.headers['x-tenant-id'] as string;
       if (!tenantId) {
@@ -493,7 +456,7 @@ export class LogController {
         });
         return;
       }
-      
+
       // Verify the user has permission to append to the log
       const token = req.headers.authorization?.split(' ')[1];
       if (!token) {
@@ -504,7 +467,7 @@ export class LogController {
         });
         return;
       }
-      
+
       const userInfo = await this.authService.validateToken(token);
       if (!userInfo) {
         res.status(401).json({
@@ -514,14 +477,14 @@ export class LogController {
         });
         return;
       }
-      
+
       // Check if the user has permission to append to the log
       const hasPermission = await this.authService.checkPermission(
         token,
         'append',
         `logs/${logName}`
       );
-      
+
       if (!hasPermission) {
         res.status(403).json({
           status: 'error',
@@ -530,18 +493,14 @@ export class LogController {
         });
         return;
       }
-      
-      // Append the log entry
-      const result = await this.logService.appendLogEntry(
-        tenantId,
-        logName,
-        validatedData.data,
-        {
-          searchTokens: validatedData.searchTokens,
-          encryptionInfo: validatedData.encryptionInfo
-        }
-      );
-      
+
+      // Pass the log entry data directly from the wire protocol
+      // The OpenAPI validator has already validated the request body
+      const result = await this.logService.appendLogEntry({
+        ...req.body,
+        logId: logName
+      });
+
       res.status(201).json({
         status: 'success',
         id: result.id,
@@ -559,7 +518,7 @@ export class LogController {
 
   /**
    * Get log entries
-   * 
+   *
    * @param req Express request
    * @param res Express response
    */
@@ -575,11 +534,11 @@ export class LogController {
         });
         return;
       }
-      
+
       // Validate query parameters
       const limit = parseInt(req.query.limit as string) || 10;
       const offset = parseInt(req.query.offset as string) || 0;
-      
+
       // Get tenant ID from request
       const tenantId = req.headers['x-tenant-id'] as string;
       if (!tenantId) {
@@ -590,7 +549,7 @@ export class LogController {
         });
         return;
       }
-      
+
       // Verify the user has permission to read the log
       const token = req.headers.authorization?.split(' ')[1];
       if (!token) {
@@ -601,7 +560,7 @@ export class LogController {
         });
         return;
       }
-      
+
       const userInfo = await this.authService.validateToken(token);
       if (!userInfo) {
         res.status(401).json({
@@ -611,14 +570,14 @@ export class LogController {
         });
         return;
       }
-      
+
       // Check if the user has permission to read the log
       const hasPermission = await this.authService.checkPermission(
         token,
         'read',
         `logs/${logName}`
       );
-      
+
       if (!hasPermission) {
         res.status(403).json({
           status: 'error',
@@ -627,19 +586,16 @@ export class LogController {
         });
         return;
       }
-      
+
       // Get the log entries
       const result = await this.logService.getLogEntries(
-        tenantId,
         logName,
         limit,
         offset
       );
-      
-      res.status(200).json({
-        status: 'success',
-        ...result
-      });
+
+      // Return the paginated log entries
+      res.status(200).json(result);
     } catch (error) {
       logger.error('Error getting log entries:', error);
       res.status(500).json({
@@ -652,7 +608,7 @@ export class LogController {
 
   /**
    * Get a log entry
-   * 
+   *
    * @param req Express request
    * @param res Express response
    */
@@ -677,7 +633,7 @@ export class LogController {
         });
         return;
       }
-      
+
       // Get tenant ID from request
       const tenantId = req.headers['x-tenant-id'] as string;
       if (!tenantId) {
@@ -688,7 +644,7 @@ export class LogController {
         });
         return;
       }
-      
+
       // Verify the user has permission to read the log
       const token = req.headers.authorization?.split(' ')[1];
       if (!token) {
@@ -699,7 +655,7 @@ export class LogController {
         });
         return;
       }
-      
+
       const userInfo = await this.authService.validateToken(token);
       if (!userInfo) {
         res.status(401).json({
@@ -709,14 +665,14 @@ export class LogController {
         });
         return;
       }
-      
+
       // Check if the user has permission to read the log
       const hasPermission = await this.authService.checkPermission(
         token,
         'read',
         `logs/${logName}`
       );
-      
+
       if (!hasPermission) {
         res.status(403).json({
           status: 'error',
@@ -725,18 +681,15 @@ export class LogController {
         });
         return;
       }
-      
+
       // Get the log entry
       const entry = await this.logService.getLogEntry(
-        tenantId,
         logName,
         entryId
       );
-      
-      res.status(200).json({
-        status: 'success',
-        entry
-      });
+
+      // Return the log entry
+      res.status(200).json(entry);
     } catch (error) {
       logger.error('Error getting log entry:', error);
       res.status(500).json({
@@ -749,7 +702,7 @@ export class LogController {
 
   /**
    * Search log entries
-   * 
+   *
    * @param req Express request
    * @param res Express response
    */
@@ -765,19 +718,7 @@ export class LogController {
         });
         return;
       }
-      
-      // Validate request
-      const schema = z.object({
-        query: z.string().optional(),
-        searchTokens: z.array(z.string()).optional(),
-        startTime: z.string().optional(),
-        endTime: z.string().optional(),
-        limit: z.number().positive().optional(),
-        offset: z.number().nonnegative().optional()
-      });
 
-      const validatedData = validateRequest(req.body, schema);
-      
       // Get tenant ID from request
       const tenantId = req.headers['x-tenant-id'] as string;
       if (!tenantId) {
@@ -788,7 +729,7 @@ export class LogController {
         });
         return;
       }
-      
+
       // Verify the user has permission to search the log
       const token = req.headers.authorization?.split(' ')[1];
       if (!token) {
@@ -799,7 +740,7 @@ export class LogController {
         });
         return;
       }
-      
+
       const userInfo = await this.authService.validateToken(token);
       if (!userInfo) {
         res.status(401).json({
@@ -809,14 +750,14 @@ export class LogController {
         });
         return;
       }
-      
+
       // Check if the user has permission to search the log
       const hasPermission = await this.authService.checkPermission(
         token,
         'search',
         `logs/${logName}`
       );
-      
+
       if (!hasPermission) {
         res.status(403).json({
           status: 'error',
@@ -825,25 +766,13 @@ export class LogController {
         });
         return;
       }
-      
-      // Search the log entries
-      const result = await this.logService.searchLogEntries(
-        tenantId,
-        logName,
-        {
-          query: validatedData.query,
-          searchTokens: validatedData.searchTokens,
-          startTime: validatedData.startTime,
-          endTime: validatedData.endTime,
-          limit: validatedData.limit || 10,
-          offset: validatedData.offset || 0
-        }
-      );
-      
-      res.status(200).json({
-        status: 'success',
-        ...result
-      });
+
+      // Pass the search options directly from the wire protocol
+      // The OpenAPI validator has already validated the request body
+      const result = await this.logService.searchLogEntries(logName, req.body);
+
+      // Return the search results
+      res.status(200).json(result);
     } catch (error) {
       logger.error('Error searching log entries:', error);
       res.status(500).json({
@@ -854,96 +783,11 @@ export class LogController {
     }
   };
 
-  /**
-   * Get log statistics
-   * 
-   * @param req Express request
-   * @param res Express response
-   */
-  public getLogStatistics = async (req: Request, res: Response): Promise<void> => {
-    try {
-      // Get log name from request
-      const logName = req.params.logName;
-      if (!logName) {
-        res.status(400).json({
-          status: 'error',
-          message: 'Missing log name',
-          code: 'missing_log_name'
-        });
-        return;
-      }
-      
-      // Get tenant ID from request
-      const tenantId = req.headers['x-tenant-id'] as string;
-      if (!tenantId) {
-        res.status(400).json({
-          status: 'error',
-          message: 'Missing tenant ID',
-          code: 'missing_tenant_id'
-        });
-        return;
-      }
-      
-      // Verify the user has permission to get statistics for the log
-      const token = req.headers.authorization?.split(' ')[1];
-      if (!token) {
-        res.status(401).json({
-          status: 'error',
-          message: 'Unauthorized',
-          code: 'unauthorized'
-        });
-        return;
-      }
-      
-      const userInfo = await this.authService.validateToken(token);
-      if (!userInfo) {
-        res.status(401).json({
-          status: 'error',
-          message: 'Invalid token',
-          code: 'invalid_token'
-        });
-        return;
-      }
-      
-      // Check if the user has permission to get statistics for the log
-      const hasPermission = await this.authService.checkPermission(
-        token,
-        'read',
-        `logs/${logName}`
-      );
-      
-      if (!hasPermission) {
-        res.status(403).json({
-          status: 'error',
-          message: 'Forbidden',
-          code: 'forbidden'
-        });
-        return;
-      }
-      
-      // Get the log statistics
-      const statistics = await this.logService.getLogStatistics(
-        tenantId,
-        logName
-      );
-      
-      res.status(200).json({
-        status: 'success',
-        statistics
-      });
-    } catch (error) {
-      logger.error('Error getting log statistics:', error);
-      res.status(500).json({
-        status: 'error',
-        message: error instanceof Error ? error.message : 'Unknown error',
-        code: 'get_log_statistics_failed'
-      });
-    }
-  };
+
 
   /**
    * Batch append log entries
-   * 
+   *
    * @param req Express request
    * @param res Express response
    */
@@ -959,23 +803,7 @@ export class LogController {
         });
         return;
       }
-      
-      // Validate request
-      const schema = z.object({
-        entries: z.array(
-          z.object({
-            data: z.any(),
-            searchTokens: z.array(z.string()).optional(),
-            encryptionInfo: z.object({
-              version: z.string(),
-              algorithm: z.string()
-            }).optional()
-          })
-        )
-      });
 
-      const validatedData = validateRequest(req.body, schema);
-      
       // Get tenant ID from request
       const tenantId = req.headers['x-tenant-id'] as string;
       if (!tenantId) {
@@ -986,7 +814,7 @@ export class LogController {
         });
         return;
       }
-      
+
       // Verify the user has permission to append to the log
       const token = req.headers.authorization?.split(' ')[1];
       if (!token) {
@@ -997,7 +825,7 @@ export class LogController {
         });
         return;
       }
-      
+
       const userInfo = await this.authService.validateToken(token);
       if (!userInfo) {
         res.status(401).json({
@@ -1007,14 +835,14 @@ export class LogController {
         });
         return;
       }
-      
+
       // Check if the user has permission to append to the log
       const hasPermission = await this.authService.checkPermission(
         token,
         'append',
         `logs/${logName}`
       );
-      
+
       if (!hasPermission) {
         res.status(403).json({
           status: 'error',
@@ -1023,16 +851,20 @@ export class LogController {
         });
         return;
       }
-      
+
+      // Prepare log entries with proper structure
+      // Add logId to each entry
+      const entries = req.body.entries.map((entry: any) => ({
+        ...entry,
+        logId: logName
+      }));
+
       // Batch append the log entries
-      const result = await this.logService.batchAppendLogEntries(
-        tenantId,
-        logName,
-        validatedData.entries
-      );
-      
+      // The OpenAPI validator has already validated the request body
+      const result = await this.logService.batchAppendLogEntries(logName, entries);
+
+      // Return the batch append result
       res.status(201).json({
-        status: 'success',
         count: result.entries.length,
         entries: result.entries
       });

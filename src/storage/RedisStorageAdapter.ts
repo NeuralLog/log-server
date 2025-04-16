@@ -1,7 +1,7 @@
 import { StorageAdapter } from './StorageAdapter';
 import Redis from 'ioredis';
 import logger from '../utils/logger';
-import { LogEntry, LogStatistics, AggregateStatistics } from '@neurallog/shared';
+import { Log, LogEntry, LogSearchOptions, PaginatedResult, BatchAppendResult } from '@neurallog/client-sdk/dist/types/api';
 
 // Server namespace prefix for all keys
 const SERVER_NAMESPACE = 'logserver';
@@ -109,7 +109,7 @@ export class RedisStorageAdapter implements StorageAdapter {
       // Create a document with the log entry
       const document: LogEntry = {
         id: logId,
-        name: logName,
+        logId: logName,
         data: encryptedData,
         timestamp: new Date().toISOString()
       };
@@ -122,17 +122,17 @@ export class RedisStorageAdapter implements StorageAdapter {
       const logNamesKey = this.getLogNamesKey();
       await this.client.sadd(logNamesKey, logName);
 
-      // Add to the log entries sorted set (for time-based queries)
+      // Add to the log entries set
       const logEntriesKey = this.getLogEntriesKey(logName);
-      await this.client.zadd(logEntriesKey, new Date(document.timestamp).getTime(), logId);
+      await this.client.sadd(logEntriesKey, logId);
 
       // If search tokens are provided, index them
       if (searchTokens && searchTokens.length > 0) {
         await this.indexSearchTokens(logName, logId, searchTokens);
       }
 
-      // Update statistics
-      await this.updateStatisticsOnAdd(logName, document);
+      // Log the operation
+      logger.debug(`Added log entry ${logId} to ${logName}`);
 
       logger.info(`Stored log entry: ${logName}, ID: ${logId}, namespace: ${this.namespace}`);
     } catch (error) {
@@ -203,12 +203,12 @@ export class RedisStorageAdapter implements StorageAdapter {
       // Update the log entry
       await this.client.set(logKey, JSON.stringify(document));
 
-      // Update the timestamp in the sorted set
+      // Ensure the log ID is in the entries set
       const logEntriesKey = this.getLogEntriesKey(logName);
-      await this.client.zadd(logEntriesKey, new Date(document.timestamp).getTime(), logId);
+      await this.client.sadd(logEntriesKey, logId);
 
-      // Update statistics
-      await this.updateStatisticsOnUpdate(logName, existing, document);
+      // Log the operation
+      logger.debug(`Updated log entry ${logId} in ${logName}`);
 
       logger.info(`Updated log entry: ${logName}, ID: ${logId}, namespace: ${this.namespace}`);
       return true;
@@ -244,12 +244,12 @@ export class RedisStorageAdapter implements StorageAdapter {
       // Delete the log entry
       await this.client.del(logKey);
 
-      // Remove from the sorted set
+      // Remove from the entries set
       const logEntriesKey = this.getLogEntriesKey(logName);
-      await this.client.zrem(logEntriesKey, logId);
+      await this.client.srem(logEntriesKey, logId);
 
-      // Update statistics
-      await this.updateStatisticsOnDelete(logName, entry);
+      // Log the operation
+      logger.debug(`Deleted log entry ${logId} from ${logName}`);
 
       logger.info(`Deleted log entry: ${logName}, ID: ${logId}, namespace: ${this.namespace}`);
       return true;
@@ -270,9 +270,11 @@ export class RedisStorageAdapter implements StorageAdapter {
     await this.ensureInitialized();
 
     try {
-      // Get log IDs from the sorted set (newest first)
+      // Get log IDs from the entries set
       const logEntriesKey = this.getLogEntriesKey(logName);
-      const logIds = await this.client.zrevrange(logEntriesKey, 0, limit - 1);
+      const logIds = await this.client.smembers(logEntriesKey);
+      // Limit the number of entries
+      const limitedLogIds = logIds.slice(0, limit);
 
       if (logIds.length === 0) {
         logger.info(`No logs found for: ${logName}, namespace: ${this.namespace}`);
@@ -281,7 +283,7 @@ export class RedisStorageAdapter implements StorageAdapter {
 
       // Get log entries
       const pipeline = this.client.pipeline();
-      for (const logId of logIds) {
+      for (const logId of limitedLogIds) {
         const logKey = this.getLogKey(logName, logId);
         pipeline.get(logKey);
       }
@@ -334,9 +336,9 @@ export class RedisStorageAdapter implements StorageAdapter {
     await this.ensureInitialized();
 
     try {
-      // Get log IDs from the sorted set
+      // Get log IDs from the entries set
       const logEntriesKey = this.getLogEntriesKey(logName);
-      const logIds = await this.client.zrange(logEntriesKey, 0, -1);
+      const logIds = await this.client.smembers(logEntriesKey);
 
       if (logIds.length === 0) {
         logger.info(`Log not found: ${logName}, namespace: ${this.namespace}`);
@@ -359,8 +361,8 @@ export class RedisStorageAdapter implements StorageAdapter {
 
       await pipeline.exec();
 
-      // Update statistics
-      await this.updateStatisticsOnClear(logName);
+      // Log the operation
+      logger.debug(`Cleared log ${logName}`);
 
       logger.info(`Cleared log: ${logName}, removed ${logIds.length} entries, namespace: ${this.namespace}`);
       return true;
@@ -458,35 +460,35 @@ export class RedisStorageAdapter implements StorageAdapter {
   }
 
   /**
-   * Get log entries with time filter
+   * Get log entries
    *
    * @param logName Log name
-   * @param startTime Start time
-   * @param endTime End time
    * @param limit Maximum number of entries to return
    * @returns Log entries
    */
   private async getLogEntriesWithTimeFilter(
     logName: string,
-    startTime?: string,
-    endTime?: string,
+    _startTime?: string, // Unused in zero-knowledge system
+    _endTime?: string,   // Unused in zero-knowledge system
     limit: number = 100
   ): Promise<any[]> {
-    // Convert times to timestamps
-    const startScore = startTime ? new Date(startTime).getTime() : '-inf';
-    const endScore = endTime ? new Date(endTime).getTime() : '+inf';
+    // In a zero-knowledge system, we don't filter by time on the server
+    // as timestamps are encrypted on the client side
 
-    // Get log IDs from the sorted set
+    // Get log IDs from the entries set
     const logEntriesKey = this.getLogEntriesKey(logName);
-    const logIds = await this.client.zrevrangebyscore(logEntriesKey, endScore, startScore, 'LIMIT', 0, limit);
+    const logIds = await this.client.smembers(logEntriesKey);
 
-    if (logIds.length === 0) {
+    // Limit the number of entries
+    const limitedLogIds = logIds.slice(0, limit);
+
+    if (limitedLogIds.length === 0) {
       return [];
     }
 
     // Get log entries
     const pipeline = this.client.pipeline();
-    for (const logId of logIds) {
+    for (const logId of limitedLogIds) {
       const logKey = this.getLogKey(logName, logId);
       pipeline.get(logKey);
     }
@@ -696,381 +698,517 @@ export class RedisStorageAdapter implements StorageAdapter {
 
 
   /**
-   * Get aggregate statistics for all logs
+   * Create a new log
    *
-   * @returns Statistics object with total logs, total entries, and per-log statistics
+   * @param log Complete Log object
+   * @returns Created log
    */
-  public async getAggregateStatistics(): Promise<AggregateStatistics> {
+  public async createLog(log: Log): Promise<Log> {
     await this.ensureInitialized();
 
     try {
-      // Get total logs and entries
-      const totalLogsKey = this.getKey('stats:totalLogs');
-      const totalEntriesKey = this.getKey('stats:totalEntries');
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
 
-      const [totalLogsStr, totalEntriesStr] = await Promise.all([
-        this.client.get(totalLogsKey),
-        this.client.get(totalEntriesKey)
-      ]);
+      // Create the log
+      const newLog: Log = {
+        ...log,
+        id: log.id || Math.random().toString(36).substring(2, 15),
+        createdAt: log.createdAt || new Date().toISOString(),
+        updatedAt: log.updatedAt || new Date().toISOString()
+      };
 
-      const totalLogs = totalLogsStr ? parseInt(totalLogsStr) : 0;
-      const totalEntries = totalEntriesStr ? parseInt(totalEntriesStr) : 0;
+      // Store the log in Redis with tenant ID for storage
+      const logKey = this.getKey(`tenant:${tenantId}:log:${newLog.name}`);
+      await this.client.set(logKey, JSON.stringify({
+        ...newLog,
+        tenantId
+      }));
 
-      // Get all log names
-      const logNames = await this.getLogNames();
+      // Add to tenant logs set
+      const tenantLogsKey = this.getKey(`tenant:${tenantId}:logs`);
+      await this.client.sadd(tenantLogsKey, newLog.name);
 
-      // Get statistics for each log
-      const logStats: LogStatistics[] = [];
+      logger.info(`Created log ${newLog.name}`);
+      return newLog;
+    } catch (error) {
+      logger.error(`Error creating log: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
 
+
+  }
+
+  /**
+   * Get all logs
+   *
+   * @returns Array of logs
+   */
+  public async getLogs(): Promise<Log[]> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Get all log names for the tenant
+      const tenantLogsKey = this.getKey(`tenant:${tenantId}:logs`);
+      const logNames = await this.client.smembers(tenantLogsKey);
+
+      // Get each log
+      const logsWithTenant: (Log & { tenantId: string })[] = [];
       for (const logName of logNames) {
-        const logEntryCountKey = this.getKey(`stats:log:${logName}:entryCount`);
-        const firstEntryTimestampKey = this.getKey(`stats:log:${logName}:firstEntryTimestamp`);
-        const lastEntryTimestampKey = this.getKey(`stats:log:${logName}:lastEntryTimestamp`);
-
-        const [entryCountStr, firstTimestampStr, lastTimestampStr] = await Promise.all([
-          this.client.get(logEntryCountKey),
-          this.client.get(firstEntryTimestampKey),
-          this.client.get(lastEntryTimestampKey)
-        ]);
-
-        const entryCount = entryCountStr ? parseInt(entryCountStr) : 0;
-
-        if (entryCount > 0) {
-          logStats.push({
-            logName,
-            entryCount,
-            firstEntryTimestamp: firstTimestampStr ? parseInt(firstTimestampStr) : undefined,
-            lastEntryTimestamp: lastTimestampStr ? parseInt(lastTimestampStr) : undefined
-          });
+        const logKey = this.getKey(`tenant:${tenantId}:log:${logName}`);
+        const logJson = await this.client.get(logKey);
+        if (logJson) {
+          logsWithTenant.push(JSON.parse(logJson));
         }
       }
 
-      // Sort log stats by entry count (descending)
-      logStats.sort((a, b) => b.entryCount - a.entryCount);
+      // Remove tenant ID from the returned logs
+      const logs = logsWithTenant.map(({ tenantId: _, ...rest }) => rest as Log);
 
-      return {
-        totalLogs,
-        totalEntries,
-        logStats
-      };
+      logger.info(`Retrieved ${logs.length} logs`);
+      return logs;
     } catch (error) {
-      logger.error(`Error getting aggregate statistics: ${error instanceof Error ? error.message : String(error)}`);
-      return {
-        totalLogs: 0,
-        totalEntries: 0,
-        logStats: []
+      logger.error(`Error getting logs: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
+
+
+  }
+
+  /**
+   * Get a log by name
+   *
+   * @param name Log name
+   * @returns Log or null if not found
+   */
+  public async getLog(name: string): Promise<Log | null> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Get the log
+      const logKey = this.getKey(`tenant:${tenantId}:log:${name}`);
+      const logJson = await this.client.get(logKey);
+
+      if (logJson) {
+        const logWithTenant = JSON.parse(logJson);
+        // Remove tenant ID from the returned log
+        const { tenantId: _, ...log } = logWithTenant;
+        logger.info(`Retrieved log ${name}`);
+        return log as Log;
+      } else {
+        logger.info(`Log ${name} not found`);
+        return null;
+      }
+    } catch (error) {
+      logger.error(`Error getting log: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+
+
+  }
+
+  /**
+   * Update a log
+   *
+   * @param log Complete Log object
+   * @returns Updated log
+   */
+  public async updateLog(log: Log): Promise<Log> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+      const name = log.name;
+
+      // Get the log
+      const logKey = this.getKey(`tenant:${tenantId}:log:${name}`);
+      const logJson = await this.client.get(logKey);
+
+      if (!logJson) {
+        throw new Error(`Log ${name} not found`);
+      }
+
+      // Parse the log
+      const existingLogWithTenant = JSON.parse(logJson);
+      // Remove tenant ID from the existing log
+      const { tenantId: _, ...existingLog } = existingLogWithTenant;
+
+      // Update the log
+      const updatedLog: Log = {
+        ...existingLog,
+        ...log,
+        updatedAt: new Date().toISOString()
       };
+
+      // Store the updated log
+      await this.client.set(logKey, JSON.stringify({
+        ...updatedLog,
+        tenantId // Keep tenant ID for storage
+      }));
+
+      logger.info(`Updated log ${name}`);
+      return updatedLog;
+    } catch (error) {
+      logger.error(`Error updating log: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+
+
+  }
+
+  /**
+   * Delete a log
+   *
+   * @param name Log name
+   */
+  public async deleteLog(name: string): Promise<void> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Get all log entry IDs
+      const logEntriesKey = this.getLogEntriesKey(name);
+      const logIds = await this.client.zrange(logEntriesKey, 0, -1);
+
+      // Delete all log entries
+      const pipeline = this.client.pipeline();
+
+      // Delete each log entry
+      for (const logId of logIds) {
+        const logKey = this.getLogKey(name, logId);
+        pipeline.del(logKey);
+      }
+
+      // Delete the log entries sorted set
+      pipeline.del(logEntriesKey);
+
+      // Delete the log
+      const logKey = this.getKey(`tenant:${tenantId}:log:${name}`);
+      pipeline.del(logKey);
+
+      // Remove from tenant logs set
+      const tenantLogsKey = this.getKey(`tenant:${tenantId}:logs`);
+      pipeline.srem(tenantLogsKey, name);
+
+      await pipeline.exec();
+
+      logger.info(`Deleted log ${name}`);
+    } catch (error) {
+      logger.error(`Error deleting log: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+
+
+  }
+
+  /**
+   * Append an entry to a log
+   *
+   * @param logName Log name
+   * @param entry Log entry
+   * @returns ID of the new entry
+   */
+  public async appendLogEntry(logName: string, entry: LogEntry): Promise<string> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Check if the log exists
+      const logKey = this.getKey(`tenant:${tenantId}:log:${logName}`);
+      const logJson = await this.client.get(logKey);
+
+      if (!logJson) {
+        throw new Error(`Log ${logName} not found`);
+      }
+
+      // Generate an ID if not provided
+      const id = entry.id || Math.random().toString(36).substring(2, 15);
+
+      // Create the log entry
+      const logEntry: LogEntry = {
+        ...entry,
+        id,
+        logId: logName,
+        timestamp: entry.timestamp || new Date().toISOString()
+      };
+
+      // Store the log entry
+      const entryKey = this.getLogKey(logName, id);
+      await this.client.set(entryKey, JSON.stringify(logEntry));
+
+      // Add to the entries set
+      const logEntriesKey = this.getLogEntriesKey(logName);
+      await this.client.sadd(logEntriesKey, id);
+
+      logger.info(`Appended log entry to ${logName}`);
+      return id;
+    } catch (error) {
+      logger.error(`Error appending log entry: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+
+
+  }
+
+
+
+  /**
+   * Get log entries
+   *
+   * @param logName Log name
+   * @param options Options for pagination
+   * @returns Paginated result of log entries
+   */
+  public async getLogEntries(logName: string, options: { limit?: number; offset?: number }): Promise<PaginatedResult<LogEntry>> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Check if the log exists
+      const logKey = this.getKey(`tenant:${tenantId}:log:${logName}`);
+      const logJson = await this.client.get(logKey);
+
+      if (!logJson) {
+        throw new Error(`Log ${logName} not found`);
+      }
+
+      // Get the total count
+      const logEntriesKey = this.getLogEntriesKey(logName);
+      const totalCount = await this.client.zcard(logEntriesKey);
+
+      // Apply pagination
+      const limit = options.limit || 100;
+      const offset = options.offset || 0;
+
+      // Get the paginated entries (newest first)
+      const logIds = await this.client.zrevrange(logEntriesKey, offset, offset + limit - 1);
+
+      // Get each log entry
+      const entries: LogEntry[] = [];
+      for (const logId of logIds) {
+        const logKey = this.getLogKey(logName, logId);
+        const logJson = await this.client.get(logKey);
+        if (logJson) {
+          entries.push(JSON.parse(logJson));
+        }
+      }
+
+      // Create the paginated result
+      const result: PaginatedResult<LogEntry> = {
+        items: entries,
+        total: totalCount,
+        entries,
+        totalCount,
+        limit,
+        offset,
+        hasMore: offset + limit < totalCount
+      };
+
+      logger.info(`Retrieved ${entries.length} entries for log ${logName} for tenant ${tenantId}`);
+      return result;
+    } catch (error) {
+      logger.error(`Error getting log entries: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
     }
   }
 
   /**
-   * Get statistics for a specific log
+   * Batch append entries to a log
    *
    * @param logName Log name
-   * @returns Statistics object for the specified log
+   * @param entries Log entries
+   * @returns Result with IDs of the new entries
    */
-  public async getLogStatistics(logName: string): Promise<LogStatistics | null> {
+  public async batchAppendLogEntries(logName: string, entries: LogEntry[]): Promise<BatchAppendResult> {
     await this.ensureInitialized();
 
     try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
       // Check if the log exists
-      const logEntryCountKey = this.getKey(`stats:log:${logName}:entryCount`);
-      const entryCountStr = await this.client.get(logEntryCountKey);
+      const logKey = this.getKey(`tenant:${tenantId}:log:${logName}`);
+      const logJson = await this.client.get(logKey);
 
-      if (!entryCountStr) return null;
+      if (!logJson) {
+        throw new Error(`Log ${logName} not found`);
+      }
 
-      const entryCount = parseInt(entryCountStr);
+      // Process each entry
+      const results: { id: string; timestamp: string }[] = [];
+      const pipeline = this.client.pipeline();
 
-      // Get timestamps
-      const firstEntryTimestampKey = this.getKey(`stats:log:${logName}:firstEntryTimestamp`);
-      const lastEntryTimestampKey = this.getKey(`stats:log:${logName}:lastEntryTimestamp`);
+      for (const entry of entries) {
+        // Generate an ID if not provided
+        const id = entry.id || Math.random().toString(36).substring(2, 15);
 
-      const [firstTimestampStr, lastTimestampStr] = await Promise.all([
-        this.client.get(firstEntryTimestampKey),
-        this.client.get(lastEntryTimestampKey)
-      ]);
+        // Create the log entry
+        const logEntry: LogEntry = {
+          ...entry,
+          id,
+          logId: logName,
+          timestamp: entry.timestamp || new Date().toISOString()
+        };
 
-      return {
-        logName,
-        entryCount,
-        firstEntryTimestamp: firstTimestampStr ? parseInt(firstTimestampStr) : undefined,
-        lastEntryTimestamp: lastTimestampStr ? parseInt(lastTimestampStr) : undefined
-      };
+        // Store the log entry
+        const logKey = this.getLogKey(logName, id);
+        pipeline.set(logKey, JSON.stringify(logEntry));
+
+        // Add to the entries set
+        const logEntriesKey = this.getLogEntriesKey(logName);
+        pipeline.sadd(logEntriesKey, id);
+
+        // Add to results
+        results.push({
+          id,
+          timestamp: logEntry.timestamp || ''
+        });
+      }
+
+      await pipeline.exec();
+
+      logger.info(`Batch appended ${entries.length} log entries to ${logName} for tenant ${tenantId}`);
+      return { entries: results };
     } catch (error) {
-      logger.error(`Error getting log statistics: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Error batch appending log entries: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Search log entries
+   *
+   * @param logName Log name
+   * @param options Search options
+   * @returns Paginated result of log entries
+   */
+  public async searchLogEntries(logName: string, options: LogSearchOptions): Promise<PaginatedResult<LogEntry>> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Check if the log exists
+      const logKey = this.getKey(`tenant:${tenantId}:log:${logName}`);
+      const logJson = await this.client.get(logKey);
+
+      if (!logJson) {
+        throw new Error(`Log ${logName} not found`);
+      }
+
+      // Get all log entry IDs
+      const logEntriesKey = this.getLogEntriesKey(logName);
+      let logIds: string[] = [];
+
+      // Apply time filters if provided
+      if (options.startTime || options.endTime) {
+        const startTime = options.startTime ? new Date(options.startTime).getTime() : '-inf';
+        const endTime = options.endTime ? new Date(options.endTime).getTime() : '+inf';
+        logIds = await this.client.zrangebyscore(logEntriesKey, startTime, endTime);
+      } else {
+        logIds = await this.client.zrange(logEntriesKey, 0, -1);
+      }
+
+      // Get each log entry
+      const allEntries: LogEntry[] = [];
+      for (const logId of logIds) {
+        const logKey = this.getLogKey(logName, logId);
+        const logJson = await this.client.get(logKey);
+        if (logJson) {
+          allEntries.push(JSON.parse(logJson));
+        }
+      }
+
+      // Apply query filter
+      let filteredEntries = [...allEntries];
+      if (options.query) {
+        const query = options.query.toLowerCase();
+        filteredEntries = filteredEntries.filter(entry =>
+          JSON.stringify(entry).toLowerCase().includes(query)
+        );
+      }
+
+      // We don't sort by timestamp in a zero-knowledge system
+      // as timestamps are encrypted on the client side
+      const sortedEntries = filteredEntries;
+
+      // Apply pagination
+      const limit = options.limit || 100;
+      const offset = options.offset || 0;
+      const paginatedEntries = sortedEntries.slice(offset, offset + limit);
+
+      // Create the paginated result
+      const result: PaginatedResult<LogEntry> = {
+        items: paginatedEntries,
+        total: filteredEntries.length,
+        entries: paginatedEntries,
+        totalCount: filteredEntries.length,
+        limit,
+        offset,
+        hasMore: offset + limit < filteredEntries.length
+      };
+
+      logger.info(`Search returned ${paginatedEntries.length} results for log ${logName} for tenant ${tenantId}`);
+      return result;
+    } catch (error) {
+      logger.error(`Error searching log entries: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get a log entry
+   *
+   * @param logName Log name
+   * @param entryId Entry ID
+   * @returns Log entry or null if not found
+   */
+  public async getLogEntry(logName: string, entryId: string): Promise<LogEntry | null> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Check if the log exists
+      const logKey = this.getKey(`tenant:${tenantId}:log:${logName}`);
+      const logJson = await this.client.get(logKey);
+
+      if (!logJson) {
+        throw new Error(`Log ${logName} not found`);
+      }
+
+      // Get the log entry
+      const entryKey = this.getLogKey(logName, entryId);
+      const entryJson = await this.client.get(entryKey);
+
+      if (entryJson) {
+        const entry = JSON.parse(entryJson);
+        logger.info(`Retrieved log entry ${entryId} for log ${logName}`);
+        return entry;
+      } else {
+        logger.info(`Log entry ${entryId} not found for log ${logName}`);
+        return null;
+      }
+    } catch (error) {
+      logger.error(`Error getting log entry: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
   }
-
-  /**
-   * Update statistics for a log when an entry is added
-   *
-   * @param logName Log name
-   * @param entry Log entry
-   */
-  public async updateStatisticsOnAdd(logName: string, entry: LogEntry): Promise<void> {
-    await this.ensureInitialized();
-
-    try {
-      // Get keys
-      const totalEntriesKey = this.getKey('stats:totalEntries');
-      const totalLogsKey = this.getKey('stats:totalLogs');
-      const logEntryCountKey = this.getKey(`stats:log:${logName}:entryCount`);
-
-      // Check if this is a new log
-      const currentCount = await this.client.get(logEntryCountKey);
-
-      // Use a multi command to ensure atomicity
-      const multi = this.client.multi();
-
-      // Always increment total entries
-      multi.incr(totalEntriesKey);
-
-      // Increment log entry count
-      multi.incr(logEntryCountKey);
-
-      // If this is a new log, increment total logs
-      if (!currentCount) {
-        multi.incr(totalLogsKey);
-      }
-
-      // Update timestamps if available
-      const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : undefined;
-      if (timestamp) {
-        const firstEntryTimestampKey = this.getKey(`stats:log:${logName}:firstEntryTimestamp`);
-        const lastEntryTimestampKey = this.getKey(`stats:log:${logName}:lastEntryTimestamp`);
-
-        // Get current timestamps
-        const [currentFirstTimestamp, currentLastTimestamp] = await Promise.all([
-          this.client.get(firstEntryTimestampKey),
-          this.client.get(lastEntryTimestampKey)
-        ]);
-
-        // Update first timestamp if needed
-        if (!currentFirstTimestamp || timestamp < parseInt(currentFirstTimestamp)) {
-          multi.set(firstEntryTimestampKey, timestamp.toString());
-        }
-
-        // Update last timestamp if needed
-        if (!currentLastTimestamp || timestamp > parseInt(currentLastTimestamp)) {
-          multi.set(lastEntryTimestampKey, timestamp.toString());
-        }
-      }
-
-      // Execute all commands atomically
-      await multi.exec();
-    } catch (error) {
-      logger.error(`Error updating statistics on add: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * Update statistics for a log when an entry is updated
-   *
-   * @param logName Log name
-   * @param oldEntry Old log entry
-   * @param newEntry New log entry
-   */
-  public async updateStatisticsOnUpdate(logName: string, oldEntry: LogEntry, newEntry: LogEntry): Promise<void> {
-    await this.ensureInitialized();
-
-    try {
-      // Update timestamps if needed
-      const newTimestamp = newEntry.timestamp ? new Date(newEntry.timestamp).getTime() : undefined;
-      if (newTimestamp) {
-        const firstEntryTimestampKey = this.getKey(`stats:log:${logName}:firstEntryTimestamp`);
-        const lastEntryTimestampKey = this.getKey(`stats:log:${logName}:lastEntryTimestamp`);
-
-        // Get current timestamps
-        const [currentFirstTimestampStr, currentLastTimestampStr] = await Promise.all([
-          this.client.get(firstEntryTimestampKey),
-          this.client.get(lastEntryTimestampKey)
-        ]);
-
-        const currentFirstTimestamp = currentFirstTimestampStr ? parseInt(currentFirstTimestampStr) : undefined;
-        const currentLastTimestamp = currentLastTimestampStr ? parseInt(currentLastTimestampStr) : undefined;
-
-        // Check if we need to update the first entry timestamp
-        const oldTimestamp = oldEntry.timestamp ? new Date(oldEntry.timestamp).getTime() : undefined;
-
-        if (oldTimestamp && currentFirstTimestamp && oldTimestamp === currentFirstTimestamp) {
-          // The updated entry was the first entry, we need to recalculate
-          // Get all entries for this log and find the new first timestamp
-          const entries = await this.getLogsByName(logName);
-          let newFirstTimestamp = newTimestamp;
-
-          for (const entry of entries) {
-            if (entry.id !== newEntry.id) { // Skip the updated entry
-              const entryTimestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : undefined;
-              if (entryTimestamp && entryTimestamp < newFirstTimestamp) {
-                newFirstTimestamp = entryTimestamp;
-              }
-            }
-          }
-
-          // Update the first timestamp
-          await this.client.set(firstEntryTimestampKey, newFirstTimestamp.toString());
-        } else if (newTimestamp && (!currentFirstTimestamp || newTimestamp < currentFirstTimestamp)) {
-          // The new timestamp is earlier than the current first timestamp
-          await this.client.set(firstEntryTimestampKey, newTimestamp.toString());
-        }
-
-        // Check if we need to update the last entry timestamp
-        if (oldTimestamp && currentLastTimestamp && oldTimestamp === currentLastTimestamp) {
-          // The updated entry was the last entry, we need to recalculate
-          // Get all entries for this log and find the new last timestamp
-          const entries = await this.getLogsByName(logName);
-          let newLastTimestamp = newTimestamp;
-
-          for (const entry of entries) {
-            if (entry.id !== newEntry.id) { // Skip the updated entry
-              const entryTimestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : undefined;
-              if (entryTimestamp && entryTimestamp > newLastTimestamp) {
-                newLastTimestamp = entryTimestamp;
-              }
-            }
-          }
-
-          // Update the last timestamp
-          await this.client.set(lastEntryTimestampKey, newLastTimestamp.toString());
-        } else if (newTimestamp && (!currentLastTimestamp || newTimestamp > currentLastTimestamp)) {
-          // The new timestamp is later than the current last timestamp
-          await this.client.set(lastEntryTimestampKey, newTimestamp.toString());
-        }
-      }
-    } catch (error) {
-      logger.error(`Error updating statistics on update: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * Update statistics for a log when an entry is deleted
-   *
-   * @param logName Log name
-   * @param entry Log entry
-   */
-  public async updateStatisticsOnDelete(logName: string, entry: LogEntry): Promise<void> {
-    await this.ensureInitialized();
-
-    try {
-      // Decrement total entries counter
-      const totalEntriesKey = this.getKey('stats:totalEntries');
-      await this.client.decr(totalEntriesKey);
-
-      // Decrement log entry count
-      const logEntryCountKey = this.getKey(`stats:log:${logName}:entryCount`);
-      const newCount = await this.client.decr(logEntryCountKey);
-
-      // If no more entries, remove the log stats and decrement total logs
-      if (newCount <= 0) {
-        // Decrement total logs counter
-        const totalLogsKey = this.getKey('stats:totalLogs');
-        await this.client.decr(totalLogsKey);
-
-        // Remove log statistics keys
-        const firstEntryTimestampKey = this.getKey(`stats:log:${logName}:firstEntryTimestamp`);
-        const lastEntryTimestampKey = this.getKey(`stats:log:${logName}:lastEntryTimestamp`);
-
-        await Promise.all([
-          this.client.del(logEntryCountKey),
-          this.client.del(firstEntryTimestampKey),
-          this.client.del(lastEntryTimestampKey)
-        ]);
-
-        return;
-      }
-
-      // Check if we need to recalculate timestamps
-      const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : undefined;
-      if (timestamp) {
-        const firstEntryTimestampKey = this.getKey(`stats:log:${logName}:firstEntryTimestamp`);
-        const lastEntryTimestampKey = this.getKey(`stats:log:${logName}:lastEntryTimestamp`);
-
-        const [firstTimestampStr, lastTimestampStr] = await Promise.all([
-          this.client.get(firstEntryTimestampKey),
-          this.client.get(lastEntryTimestampKey)
-        ]);
-
-        const firstTimestamp = firstTimestampStr ? parseInt(firstTimestampStr) : undefined;
-        const lastTimestamp = lastTimestampStr ? parseInt(lastTimestampStr) : undefined;
-
-        // If the deleted entry was the first or last, recalculate
-        if ((firstTimestamp && timestamp === firstTimestamp) ||
-            (lastTimestamp && timestamp === lastTimestamp)) {
-          // Get all entries for this log
-          const entries = await this.getLogsByName(logName);
-
-          if (entries.length > 0) {
-            // Find new first and last timestamps
-            let newFirstTimestamp: number | undefined;
-            let newLastTimestamp: number | undefined;
-
-            for (const e of entries) {
-              const entryTimestamp = e.timestamp ? new Date(e.timestamp).getTime() : undefined;
-              if (entryTimestamp) {
-                if (!newFirstTimestamp || entryTimestamp < newFirstTimestamp) {
-                  newFirstTimestamp = entryTimestamp;
-                }
-                if (!newLastTimestamp || entryTimestamp > newLastTimestamp) {
-                  newLastTimestamp = entryTimestamp;
-                }
-              }
-            }
-
-            // Update timestamps
-            if (newFirstTimestamp) {
-              await this.client.set(firstEntryTimestampKey, newFirstTimestamp.toString());
-            }
-            if (newLastTimestamp) {
-              await this.client.set(lastEntryTimestampKey, newLastTimestamp.toString());
-            }
-          }
-        }
-      }
-    } catch (error) {
-      logger.error(`Error updating statistics on delete: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * Update statistics for a log when it is cleared
-   *
-   * @param logName Log name
-   */
-  public async updateStatisticsOnClear(logName: string): Promise<void> {
-    await this.ensureInitialized();
-
-    try {
-      // Get current entry count for this log
-      const logEntryCountKey = this.getKey(`stats:log:${logName}:entryCount`);
-      const entryCountStr = await this.client.get(logEntryCountKey);
-      const entryCount = entryCountStr ? parseInt(entryCountStr) : 0;
-
-      if (entryCount > 0) {
-        // Decrement total entries by the log's entry count
-        const totalEntriesKey = this.getKey('stats:totalEntries');
-        await this.client.decrby(totalEntriesKey, entryCount);
-
-        // Decrement total logs
-        const totalLogsKey = this.getKey('stats:totalLogs');
-        await this.client.decr(totalLogsKey);
-
-        // Remove log statistics keys
-        const firstEntryTimestampKey = this.getKey(`stats:log:${logName}:firstEntryTimestamp`);
-        const lastEntryTimestampKey = this.getKey(`stats:log:${logName}:lastEntryTimestamp`);
-
-        await Promise.all([
-          this.client.del(logEntryCountKey),
-          this.client.del(firstEntryTimestampKey),
-          this.client.del(lastEntryTimestampKey)
-        ]);
-      }
-    } catch (error) {
-      logger.error(`Error updating statistics on clear: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-
 
   /**
    * Close the adapter
@@ -1081,4 +1219,6 @@ export class RedisStorageAdapter implements StorageAdapter {
     this.initialized = false;
     logger.info(`Redis storage adapter closed for ${SERVER_NAMESPACE}:${this.namespace}`);
   }
+
+
 }

@@ -1,4 +1,5 @@
 import { StorageAdapter } from './StorageAdapter';
+import { Log } from '@neurallog/client-sdk/dist/types/api';
 import { MemoryStorageAdapter } from './MemoryStorageAdapter';
 import { NeDBStorageAdapter } from './NeDBStorageAdapter';
 import { RedisStorageAdapter, RedisOptions } from './RedisStorageAdapter';
@@ -46,7 +47,7 @@ export class StorageAdapterFactory {
     // If Redis is specified, use Redis storage
     if (options.type === 'redis') {
       logger.info(`Creating Redis storage adapter for namespace: ${namespace}`);
-      return new RedisStorageAdapter(namespace, options.redis);
+      return new RedisStorageAdapter(namespace, options.redis) as StorageAdapter;
     }
 
     // If in-memory only, use memory storage
@@ -64,7 +65,7 @@ export class StorageAdapterFactory {
         }
 
         logger.info(`Creating NeDB storage adapter for namespace: ${namespace}`);
-        return new NeDBStorageAdapter(namespace, options.dbPath);
+        return new NeDBStorageAdapter(namespace, options.dbPath) as StorageAdapter;
       } catch (error) {
         logger.error(`Error creating database directory: ${error instanceof Error ? error.message : String(error)}`);
         logger.info(`Falling back to in-memory storage for namespace: ${namespace}`);

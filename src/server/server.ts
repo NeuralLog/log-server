@@ -29,14 +29,6 @@ export class Server {
     this.app.use(bodyParser.json());
     this.app.use(bodyParser.urlencoded({ extended: true }));
 
-    // Add authentication middleware
-    this.app.use(tokenAuthMiddleware);
-    this.app.use(resourceTokenAuthMiddleware);
-    this.app.use(apiKeyAuthMiddleware);
-
-    // Configure routes
-    this.app.use('/', routes);
-
     // Add a root route for health checks
     this.app.get('/', (req, res) => {
       res.json({
@@ -46,8 +38,16 @@ export class Server {
       });
     });
 
-    // Setup Swagger
+    // Setup Swagger and OpenAPI validation
     setupSwagger(this.app);
+
+    // Add authentication middleware
+    this.app.use(tokenAuthMiddleware);
+    this.app.use(resourceTokenAuthMiddleware);
+    this.app.use(apiKeyAuthMiddleware);
+
+    // Configure routes
+    this.app.use('/', routes);
 
     // Error handling
     this.app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

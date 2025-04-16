@@ -8,9 +8,7 @@ import {
   getLogEntryById,
   updateLogEntryById,
   deleteLogEntryById,
-  searchLogs,
-  getAggregateStatistics,
-  getLogStatistics
+  searchLogs
 } from './controllers/logsController';
 
 const router = express.Router();
@@ -22,8 +20,6 @@ const router = express.Router();
  *     description: Log management
  *   - name: Log Entries
  *     description: Log entry management
- *   - name: Statistics
- *     description: Statistics and metrics
  */
 
 // Logs endpoints
@@ -227,69 +223,6 @@ router.delete('/logs/:logName', clearLog);
  */
 router.get('/search', searchLogs);
 
-// Statistics endpoints
-
-/**
- * @swagger
- * /statistics:
- *   get:
- *     summary: Get aggregate statistics for all logs
- *     tags: [Statistics]
- *     parameters:
- *       - $ref: '#/components/parameters/namespaceParam'
- *     responses:
- *       200:
- *         description: Statistics retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                   example: success
- *                 namespace:
- *                   type: string
- *                   example: default
- *                 statistics:
- *                   $ref: '#/components/schemas/LogStatistics'
- *       500:
- *         description: Server error
- */
-router.get('/statistics', getAggregateStatistics);
-
-/**
- * @swagger
- * /logs/{logName}/statistics:
- *   get:
- *     summary: Get statistics for a specific log
- *     tags: [Statistics]
- *     parameters:
- *       - $ref: '#/components/parameters/logNameParam'
- *       - $ref: '#/components/parameters/namespaceParam'
- *     responses:
- *       200:
- *         description: Statistics retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                   example: success
- *                 namespace:
- *                   type: string
- *                   example: default
- *                 logName:
- *                   type: string
- *                   example: my-log
- *                 statistics:
- *                   $ref: '#/components/schemas/LogStatistics'
- *       500:
- *         description: Server error
- */
-router.get('/logs/:logName/statistics', getLogStatistics);
 
 // Log entry endpoints
 

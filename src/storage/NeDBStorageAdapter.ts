@@ -3,7 +3,7 @@ import Datastore from 'nedb';
 import fs from 'fs';
 import path from 'path';
 import logger from '../utils/logger';
-import { LogEntry, LogStatistics, AggregateStatistics } from '@neurallog/shared';
+import { Log, LogEntry, LogSearchOptions, PaginatedResult, BatchAppendResult } from '@neurallog/client-sdk/dist/types/api';
 
 // Server namespace prefix for all data
 const SERVER_NAMESPACE = 'logserver';
@@ -13,25 +13,13 @@ const SERVER_NAMESPACE = 'logserver';
  */
 export class NeDBStorageAdapter implements StorageAdapter {
   private _logsDb: Datastore;
-  private _statsDb: Datastore;
+  private _logsMetaDb: Datastore;
   private initialized: boolean = false;
 
   private namespace: string;
 
-  // Statistics storage
-  private statistics: {
-    totalLogs: number;
-    totalEntries: number;
-    logStats: Map<string, {
-      entryCount: number;
-      firstEntryTimestamp?: number;
-      lastEntryTimestamp?: number;
-    }>;
-  } = {
-    totalLogs: 0,
-    totalEntries: 0,
-    logStats: new Map()
-  };
+  // Tenant logs storage
+  private tenantLogs: Map<string, Map<string, Log>> = new Map();
 
   /**
    * Constructor
@@ -65,9 +53,9 @@ export class NeDBStorageAdapter implements StorageAdapter {
       autoload: false
     });
 
-    // Create the statistics database
-    this._statsDb = new Datastore({
-      filename: path.join(namespacePath, 'stats.db'),
+    // Create the logs metadata database
+    this._logsMetaDb = new Datastore({
+      filename: path.join(namespacePath, 'logs-meta.db'),
       autoload: false
     });
   }
@@ -100,24 +88,16 @@ export class NeDBStorageAdapter implements StorageAdapter {
     try {
       // Load the databases
       await this.loadDatabase(this._logsDb);
-      await this.loadDatabase(this._statsDb);
+      await this.loadDatabase(this._logsMetaDb);
 
       // Create indexes for logs database
       await this.createIndex(this._logsDb, 'id', { unique: true });
       await this.createIndex(this._logsDb, 'name', { unique: false });
 
-      // Create indexes for statistics database
-      await this.createIndex(this._statsDb, 'logName', { unique: true });
-
-      // Initialize statistics
-      this.statistics = {
-        totalLogs: 0,
-        totalEntries: 0,
-        logStats: new Map()
-      };
-
-      // Load statistics from database
-      await this.loadStatistics();
+      // Create indexes for logs metadata database
+      await this.createIndex(this._logsMetaDb, 'id', { unique: true });
+      await this.createIndex(this._logsMetaDb, 'tenantId', { unique: false });
+      await this.createIndex(this._logsMetaDb, 'name', { unique: false });
 
       this.initialized = true;
       logger.info(`NeDB storage adapter initialized for ${SERVER_NAMESPACE}:${this.namespace}`);
@@ -128,78 +108,447 @@ export class NeDBStorageAdapter implements StorageAdapter {
   }
 
   /**
-   * Load statistics from the database
+   * Create a new log
+   *
+   * @param log Complete Log object
+   * @returns Created log
    */
-  private async loadStatistics(): Promise<void> {
+  public async createLog(logData: Log): Promise<Log> {
+    await this.ensureInitialized();
+
     try {
-      // Load global statistics
-      const globalStats = await this.findOne(this._statsDb, { type: 'global' }) as { totalLogs?: number; totalEntries?: number };
-      if (globalStats) {
-        this.statistics.totalLogs = globalStats.totalLogs || 0;
-        this.statistics.totalEntries = globalStats.totalEntries || 0;
-      } else {
-        // Create global statistics if they don't exist
-        await this.insert(this._statsDb, {
-          type: 'global',
-          totalLogs: 0,
-          totalEntries: 0
-        });
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Create the log
+      const log: Log = {
+        ...logData,
+        id: logData.id || Math.random().toString(36).substring(2, 15),
+        createdAt: logData.createdAt || new Date().toISOString(),
+        updatedAt: logData.updatedAt || new Date().toISOString()
+      };
+
+      // Insert the log into the database with tenant ID for storage
+      await this.insert(this._logsMetaDb, {
+        ...log,
+        tenantId
+      });
+
+      // Get or create tenant logs
+      if (!this.tenantLogs.has(tenantId)) {
+        this.tenantLogs.set(tenantId, new Map());
       }
 
-      // Load log statistics
-      const logStats = await this.find(this._statsDb, { type: 'logStat' }) as Array<{
-        logName: string;
-        entryCount?: number;
-        firstEntryTimestamp?: number;
-        lastEntryTimestamp?: number;
-      }>;
-      for (const stat of logStats) {
-        this.statistics.logStats.set(stat.logName, {
-          entryCount: stat.entryCount || 0,
-          firstEntryTimestamp: stat.firstEntryTimestamp,
-          lastEntryTimestamp: stat.lastEntryTimestamp
-        });
-      }
+      // Add the log to the tenant logs
+      this.tenantLogs.get(tenantId)!.set(log.name, log);
+
+      logger.info(`Created log ${log.name}`);
+      return log;
     } catch (error) {
-      logger.error(`Error loading statistics: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Error creating log: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
     }
   }
 
   /**
-   * Save statistics to the database
+   * Get all logs
+   *
+   * @returns Array of logs
    */
-  private async saveStatistics(): Promise<void> {
-    try {
-      // Save global statistics
-      await this.update(
-        this._statsDb,
-        { type: 'global' },
-        {
-          $set: {
-            totalLogs: this.statistics.totalLogs,
-            totalEntries: this.statistics.totalEntries
-          }
-        },
-        { upsert: true }
-      );
+  public async getLogs(): Promise<Log[]> {
+    await this.ensureInitialized();
 
-      // Save log statistics
-      for (const [logName, stats] of this.statistics.logStats.entries()) {
-        await this.update(
-          this._statsDb,
-          { type: 'logStat', logName },
-          {
-            $set: {
-              entryCount: stats.entryCount,
-              firstEntryTimestamp: stats.firstEntryTimestamp,
-              lastEntryTimestamp: stats.lastEntryTimestamp
-            }
-          },
-          { upsert: true }
-        );
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Find all logs for the tenant
+      const logs = await this.find<Log & { tenantId: string }>(this._logsMetaDb, { tenantId });
+
+      // Update the tenant logs cache
+      if (!this.tenantLogs.has(tenantId)) {
+        this.tenantLogs.set(tenantId, new Map());
+      }
+
+      const tenantLogsMap = this.tenantLogs.get(tenantId)!;
+
+      // Remove tenant ID from the returned logs but keep it for internal use
+      const cleanedLogs = logs.map(log => {
+        const { tenantId: _, ...rest } = log;
+        return rest as Log;
+      });
+
+      // Update cache
+      for (const log of cleanedLogs) {
+        tenantLogsMap.set(log.name, log);
+      }
+
+      logger.info(`Retrieved ${cleanedLogs.length} logs`);
+      return cleanedLogs;
+    } catch (error) {
+      logger.error(`Error getting logs: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
+  }
+
+  /**
+   * Get a log by name
+   *
+   * @param name Log name
+   * @returns Log or null if not found
+   */
+  public async getLog(name: string): Promise<Log | null> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Find the log
+      const log = await this.findOne<Log & { tenantId: string }>(this._logsMetaDb, { tenantId, name });
+
+      if (log) {
+        // Update the tenant logs cache
+        if (!this.tenantLogs.has(tenantId)) {
+          this.tenantLogs.set(tenantId, new Map());
+        }
+
+        // Remove tenant ID from the returned log but keep it for internal use
+        const { tenantId: _, ...cleanedLog } = log;
+        const typedLog = cleanedLog as Log;
+
+        this.tenantLogs.get(tenantId)!.set(name, typedLog);
+
+        logger.info(`Retrieved log ${name}`);
+        return typedLog;
+      } else {
+        logger.info(`Log ${name} not found`);
+        return null;
       }
     } catch (error) {
-      logger.error(`Error saving statistics: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Error getting log: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
+  /**
+   * Update a log
+   *
+   * @param log Complete Log object
+   * @returns Updated log
+   */
+  public async updateLog(logData: Log): Promise<Log> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+      const name = logData.name;
+
+      // Find the log
+      const existingLog = await this.findOne<Log & { tenantId: string }>(this._logsMetaDb, { tenantId, name });
+
+      if (!existingLog) {
+        throw new Error(`Log ${name} not found`);
+      }
+
+      // Remove tenant ID from the existing log
+      const { tenantId: _, ...cleanedExistingLog } = existingLog;
+
+      // Update the log
+      const updatedLog: Log = {
+        ...cleanedExistingLog,
+        ...logData,
+        updatedAt: new Date().toISOString()
+      };
+
+      // Update the log in the database
+      await this.update(
+        this._logsMetaDb,
+        { tenantId, name },
+        { $set: {
+          ...updatedLog,
+          tenantId // Keep tenant ID for storage
+        }}
+      );
+
+      // Update the tenant logs cache
+      if (!this.tenantLogs.has(tenantId)) {
+        this.tenantLogs.set(tenantId, new Map());
+      }
+
+      this.tenantLogs.get(tenantId)!.set(name, updatedLog);
+
+      logger.info(`Updated log ${name}`);
+      return updatedLog;
+    } catch (error) {
+      logger.error(`Error updating log: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a log
+   *
+   * @param name Log name
+   */
+  public async deleteLog(name: string): Promise<void> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Delete the log from the database
+      await this.remove(this._logsMetaDb, { tenantId, name });
+
+      // Delete all log entries
+      await this.remove(this._logsDb, { name });
+
+      // Update the tenant logs cache
+      if (this.tenantLogs.has(tenantId)) {
+        this.tenantLogs.get(tenantId)!.delete(name);
+      }
+
+      logger.info(`Deleted log ${name}`);
+    } catch (error) {
+      logger.error(`Error deleting log: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Append an entry to a log
+   *
+   * @param logName Log name
+   * @param entry Log entry
+   * @returns ID of the new entry
+   */
+  public async appendLogEntry(logName: string, entry: LogEntry): Promise<string> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Check if the log exists
+      const log = await this.findOne<Log>(this._logsMetaDb, { tenantId, name: logName });
+      if (!log) {
+        throw new Error(`Log ${logName} not found`);
+      }
+
+      // Generate an ID if not provided
+      const id = entry.id || Math.random().toString(36).substring(2, 15);
+
+      // Create the log entry
+      const logEntry: LogEntry = {
+        ...entry,
+        id,
+        logId: logName,
+        timestamp: entry.timestamp || new Date().toISOString()
+      };
+
+      // Insert the log entry
+      await this.insert(this._logsDb, logEntry);
+
+      logger.info(`Appended log entry to ${logName}`);
+      return id;
+    } catch (error) {
+      logger.error(`Error appending log entry: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Batch append entries to a log
+   *
+   * @param logName Log name
+   * @param entries Log entries
+   * @returns Result with IDs of the new entries
+   */
+  public async batchAppendLogEntries(logName: string, entries: LogEntry[]): Promise<BatchAppendResult> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Check if the log exists
+      const log = await this.findOne<Log>(this._logsMetaDb, { tenantId, name: logName });
+      if (!log) {
+        throw new Error(`Log ${logName} not found`);
+      }
+
+      // Process each entry
+      const results: { id: string; timestamp: string }[] = [];
+
+      for (const entry of entries) {
+        // Generate an ID if not provided
+        const id = entry.id || Math.random().toString(36).substring(2, 15);
+
+        // Create the log entry
+        const logEntry: LogEntry = {
+          ...entry,
+          id,
+          logId: logName,
+          timestamp: entry.timestamp || new Date().toISOString()
+        };
+
+        // Insert the log entry
+        await this.insert(this._logsDb, {
+          ...logEntry,
+          name: logName,
+          tenantId
+        });
+
+        // Add to results
+        results.push({
+          id,
+          timestamp: logEntry.timestamp || ''
+        });
+      }
+
+      logger.info(`Batch appended ${entries.length} log entries to ${logName}`);
+      return { entries: results };
+    } catch (error) {
+      logger.error(`Error batch appending log entries: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get log entries
+   *
+   * @param logName Log name
+   * @param options Options for pagination
+   * @returns Paginated result of log entries
+   */
+  public async getLogEntries(logName: string, options: { limit?: number; offset?: number }): Promise<PaginatedResult<LogEntry>> {
+    await this.ensureInitialized();
+
+    try {
+      // Get the total count
+      const allEntries = await this.find<LogEntry>(this._logsDb, { name: logName });
+
+      // Apply pagination
+      const limit = options.limit || 100;
+      const offset = options.offset || 0;
+
+      // Get the paginated entries
+      const paginatedEntries = await this.find<LogEntry>(
+        this._logsDb,
+        { name: logName },
+        { timestamp: -1 }
+      );
+
+      // Apply pagination manually
+      const paginatedResults = paginatedEntries.slice(offset, offset + limit);
+
+      // Create the paginated result
+      const result: PaginatedResult<LogEntry> = {
+        items: paginatedResults,
+        total: allEntries.length,
+        entries: paginatedResults,
+        totalCount: allEntries.length,
+        limit,
+        offset,
+        hasMore: offset + limit < allEntries.length
+      };
+
+      logger.info(`Retrieved ${paginatedResults.length} entries for log ${logName}`);
+      return result;
+    } catch (error) {
+      logger.error(`Error getting log entries: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get a log entry
+   *
+   * @param logName Log name
+   * @param entryId Entry ID
+   * @returns Log entry or null if not found
+   */
+  public async getLogEntry(logName: string, entryId: string): Promise<LogEntry | null> {
+    await this.ensureInitialized();
+
+    try {
+      // Get tenant ID from environment variable
+      const tenantId = process.env.TENANT_ID || 'default-tenant';
+
+      // Check if the log exists
+      const log = await this.findOne<Log>(this._logsMetaDb, { tenantId, name: logName });
+      if (!log) {
+        throw new Error(`Log ${logName} not found`);
+      }
+
+      // Find the log entry
+      const entry = await this.findOne<LogEntry>(this._logsDb, { name: logName, id: entryId });
+
+      if (entry) {
+        logger.info(`Retrieved log entry ${entryId} for log ${logName}`);
+        return entry;
+      } else {
+        logger.info(`Log entry ${entryId} not found for log ${logName}`);
+        return null;
+      }
+    } catch (error) {
+      logger.error(`Error getting log entry: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
+  /**
+   * Search log entries
+   *
+   * @param logName Log name
+   * @param options Search options
+   * @returns Paginated result of log entries
+   */
+  public async searchLogEntries(logName: string, options: LogSearchOptions): Promise<PaginatedResult<LogEntry>> {
+    await this.ensureInitialized();
+
+    try {
+      // Get all entries for the log
+      const allEntries = await this.find<LogEntry>(this._logsDb, { name: logName });
+
+      // Apply filters
+      let filteredEntries = [...allEntries];
+
+      // Apply query filter
+      if (options.query) {
+        const query = options.query.toLowerCase();
+        filteredEntries = filteredEntries.filter(entry =>
+          JSON.stringify(entry).toLowerCase().includes(query)
+        );
+      }
+
+      // We don't sort by timestamp in a zero-knowledge system
+      // as timestamps are encrypted on the client side
+      const sortedEntries = filteredEntries;
+
+      // Apply pagination
+      const limit = options.limit || 100;
+      const offset = options.offset || 0;
+      const paginatedEntries = sortedEntries.slice(offset, offset + limit);
+
+      // Create the paginated result
+      const result: PaginatedResult<LogEntry> = {
+        items: paginatedEntries,
+        total: filteredEntries.length,
+        entries: paginatedEntries,
+        totalCount: filteredEntries.length,
+        limit,
+        offset,
+        hasMore: offset + limit < filteredEntries.length
+      };
+
+      logger.info(`Search returned ${paginatedEntries.length} results for log ${logName}`);
+      return result;
+    } catch (error) {
+      logger.error(`Error searching log entries: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
     }
   }
 
@@ -218,7 +567,7 @@ export class NeDBStorageAdapter implements StorageAdapter {
       // Create a document with the log entry
       const document: LogEntry = {
         id: logId,
-        name: logName,
+        logId: logName,
         data: encryptedData,
         timestamp: new Date().toISOString()
       };
@@ -226,8 +575,8 @@ export class NeDBStorageAdapter implements StorageAdapter {
       // Insert the document
       await this.insert(this._logsDb, document);
 
-      // Update statistics
-      await this.updateStatisticsOnAdd(logName, document);
+      // Log the operation
+      logger.debug(`Added log entry ${logId} to ${logName}`);
 
       logger.info(`Stored log entry: ${logName}, ID: ${logId}`);
     } catch (error) {
@@ -262,7 +611,7 @@ export class NeDBStorageAdapter implements StorageAdapter {
 
     try {
       // Find the log entry
-      const entry = await this.findOne(this._logsDb, { name: logName, id: logId });
+      const entry = await this.findOne<LogEntry>(this._logsDb, { id: logId });
 
       if (entry) {
         logger.info(`Retrieved log entry: ${logName}, ID: ${logId}`);
@@ -290,7 +639,7 @@ export class NeDBStorageAdapter implements StorageAdapter {
 
     try {
       // Check if the log entry exists
-      const existingEntry = await this.findOne(this._logsDb, { name: logName, id: logId });
+      const existingEntry = await this.findOne<LogEntry>(this._logsDb, { id: logId });
 
       if (!existingEntry) {
         logger.info(`Log entry not found for update: ${logName}, ID: ${logId}`);
@@ -318,8 +667,8 @@ export class NeDBStorageAdapter implements StorageAdapter {
           timestamp: newTimestamp
         };
 
-        // Update statistics
-        await this.updateStatisticsOnUpdate(logName, oldEntry, newEntry);
+        // Log the operation
+        logger.debug(`Updated log entry ${logId} in ${logName}`);
 
         logger.info(`Updated log entry: ${logName}, ID: ${logId}`);
         return true;
@@ -355,8 +704,8 @@ export class NeDBStorageAdapter implements StorageAdapter {
       const numRemoved = await this.remove(this._logsDb, { name: logName, id: logId });
 
       if (numRemoved > 0) {
-        // Update statistics
-        await this.updateStatisticsOnDelete(logName, entry);
+        // Log the operation
+        logger.debug(`Deleted log entry ${logId} from ${logName}`);
 
         logger.info(`Deleted log entry: ${logName}, ID: ${logId}`);
         return true;
@@ -433,8 +782,8 @@ export class NeDBStorageAdapter implements StorageAdapter {
         return false;
       }
 
-      // Update statistics before clearing
-      await this.updateStatisticsOnClear(logName);
+      // Log the operation
+      logger.debug(`Clearing log ${logName}`);
 
       // Remove all entries with the specified log name
       const numRemoved = await this.remove(this._logsDb, { name: logName });
@@ -786,237 +1135,19 @@ export class NeDBStorageAdapter implements StorageAdapter {
     return filteredEntries;
   }
 
-  /**
-   * Get aggregate statistics for all logs
-   *
-   * @returns Statistics object with total logs, total entries, and per-log statistics
-   */
-  public async getAggregateStatistics(): Promise<AggregateStatistics> {
-    await this.ensureInitialized();
 
-    // Convert the Map to an array for the response
-    const logStats = Array.from(this.statistics.logStats.entries()).map(([logName, stats]) => ({
-      logName,
-      ...stats
-    }));
 
-    // Sort log stats by entry count (descending)
-    logStats.sort((a, b) => b.entryCount - a.entryCount);
 
-    return {
-      totalLogs: this.statistics.totalLogs,
-      totalEntries: this.statistics.totalEntries,
-      logStats
-    };
-  }
 
-  /**
-   * Get statistics for a specific log
-   *
-   * @param logName Log name
-   * @returns Statistics object for the specified log
-   */
-  public async getLogStatistics(logName: string): Promise<LogStatistics | null> {
-    await this.ensureInitialized();
 
-    const stats = this.statistics.logStats.get(logName);
-    if (!stats) return null;
 
-    return {
-      logName,
-      ...stats
-    };
-  }
 
-  /**
-   * Update statistics for a log when an entry is added
-   *
-   * @param logName Log name
-   * @param entry Log entry
-   */
-  public async updateStatisticsOnAdd(logName: string, entry: LogEntry): Promise<void> {
-    await this.ensureInitialized();
 
-    // Always increment total entries
-    this.statistics.totalEntries++;
 
-    // Get or create log stats
-    let logStats = this.statistics.logStats.get(logName);
 
-    // Create new stats object if it doesn't exist
-    if (!logStats) {
-      logStats = {
-        entryCount: 0, // Will be incremented below
-        firstEntryTimestamp: undefined,
-        lastEntryTimestamp: undefined
-      };
-      this.statistics.logStats.set(logName, logStats);
-    }
 
-    // Always increment the entry count
-    logStats.entryCount++;
 
-    // Update timestamps
-    const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : undefined;
-    if (timestamp) {
-      if (!logStats.firstEntryTimestamp || timestamp < logStats.firstEntryTimestamp) {
-        logStats.firstEntryTimestamp = timestamp;
-      }
-      if (!logStats.lastEntryTimestamp || timestamp > logStats.lastEntryTimestamp) {
-        logStats.lastEntryTimestamp = timestamp;
-      }
-    }
 
-    // Save statistics to database
-    await this.saveStatistics();
-  }
-
-  /**
-   * Update statistics for a log when an entry is updated
-   *
-   * @param logName Log name
-   * @param oldEntry Old log entry
-   * @param newEntry New log entry
-   */
-  public async updateStatisticsOnUpdate(logName: string, oldEntry: LogEntry, newEntry: LogEntry): Promise<void> {
-    await this.ensureInitialized();
-
-    // Get log stats
-    const logStats = this.statistics.logStats.get(logName);
-    if (!logStats) return;
-
-    // Update timestamps if needed
-    const newTimestamp = newEntry.timestamp ? new Date(newEntry.timestamp).getTime() : undefined;
-    if (newTimestamp) {
-      // Check if we need to update the first entry timestamp
-      const oldTimestamp = oldEntry.timestamp ? new Date(oldEntry.timestamp).getTime() : undefined;
-      if (oldTimestamp && oldTimestamp === logStats.firstEntryTimestamp) {
-        // The updated entry was the first entry, recalculate
-        await this.recalculateLogStatistics(logName);
-        return;
-      }
-
-      // Check if we need to update the last entry timestamp
-      if (oldTimestamp && oldTimestamp === logStats.lastEntryTimestamp) {
-        // The updated entry was the last entry, recalculate
-        await this.recalculateLogStatistics(logName);
-        return;
-      }
-
-      // Check if the new timestamp becomes the first or last
-      if (!logStats.firstEntryTimestamp || newTimestamp < logStats.firstEntryTimestamp) {
-        logStats.firstEntryTimestamp = newTimestamp;
-      }
-      if (!logStats.lastEntryTimestamp || newTimestamp > logStats.lastEntryTimestamp) {
-        logStats.lastEntryTimestamp = newTimestamp;
-      }
-    }
-
-    // Save statistics to database
-    await this.saveStatistics();
-  }
-
-  /**
-   * Update statistics for a log when an entry is deleted
-   *
-   * @param logName Log name
-   * @param entry Log entry
-   */
-  public async updateStatisticsOnDelete(logName: string, entry: LogEntry): Promise<void> {
-    await this.ensureInitialized();
-
-    // Get log stats
-    const logStats = this.statistics.logStats.get(logName);
-    if (!logStats) return;
-
-    // Update entry count
-    logStats.entryCount--;
-    this.statistics.totalEntries--;
-
-    // If no more entries, remove the log stats
-    if (logStats.entryCount <= 0) {
-      this.statistics.logStats.delete(logName);
-      this.statistics.totalLogs--;
-      return;
-    }
-
-    // Check if we need to recalculate timestamps
-    const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : undefined;
-    if (timestamp && (timestamp === logStats.firstEntryTimestamp || timestamp === logStats.lastEntryTimestamp)) {
-      // The deleted entry was the first or last entry, recalculate
-      await this.recalculateLogStatistics(logName);
-    }
-
-    // Save statistics to database
-    await this.saveStatistics();
-  }
-
-  /**
-   * Update statistics for a log when it is cleared
-   *
-   * @param logName Log name
-   */
-  public async updateStatisticsOnClear(logName: string): Promise<void> {
-    await this.ensureInitialized();
-
-    // Get log stats
-    const logStats = this.statistics.logStats.get(logName);
-    if (!logStats) return;
-
-    // Update total entries
-    this.statistics.totalEntries -= logStats.entryCount;
-
-    // Remove the log stats
-    this.statistics.logStats.delete(logName);
-    this.statistics.totalLogs--;
-
-    // Save statistics to database
-    await this.saveStatistics();
-  }
-
-  /**
-   * Recalculate statistics for a log
-   *
-   * @param logName Log name
-   */
-  private async recalculateLogStatistics(logName: string): Promise<void> {
-    // Get log entries
-    const entries = await this.getLogsByName(logName);
-
-    // Get or create log stats
-    let logStats = this.statistics.logStats.get(logName);
-    if (!logStats) {
-      logStats = {
-        entryCount: 0,
-        firstEntryTimestamp: undefined,
-        lastEntryTimestamp: undefined
-      };
-      this.statistics.logStats.set(logName, logStats);
-    }
-
-    // Update entry count
-    logStats.entryCount = entries.length;
-
-    // Reset timestamps
-    logStats.firstEntryTimestamp = undefined;
-    logStats.lastEntryTimestamp = undefined;
-
-    // Recalculate timestamps
-    for (const entry of entries) {
-      const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : undefined;
-      if (timestamp) {
-        if (!logStats.firstEntryTimestamp || timestamp < logStats.firstEntryTimestamp) {
-          logStats.firstEntryTimestamp = timestamp;
-        }
-        if (!logStats.lastEntryTimestamp || timestamp > logStats.lastEntryTimestamp) {
-          logStats.lastEntryTimestamp = timestamp;
-        }
-      }
-    }
-
-    // Save statistics to database
-    await this.saveStatistics();
-  }
 
   /**
    * Close the adapter
@@ -1026,4 +1157,6 @@ export class NeDBStorageAdapter implements StorageAdapter {
     this.initialized = false;
     logger.info(`NeDB storage adapter closed for ${SERVER_NAMESPACE}:${this.namespace}`);
   }
+
+
 }

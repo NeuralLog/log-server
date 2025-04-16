@@ -1,4 +1,4 @@
-import { LogEntry, LogStatistics, AggregateStatistics } from '@neurallog/shared';
+import { Log, LogEntry, LogSearchOptions, PaginatedResult, BatchAppendResult } from '@neurallog/client-sdk/dist/types/api';
 
 /**
  * Storage adapter interface for storing log entries
@@ -94,56 +94,91 @@ export interface StorageAdapter {
   searchLogs(options: {
     query?: string;
     logName?: string;
-    startTime?: string;
-    endTime?: string;
     fieldFilters?: Record<string, any>;
     limit?: number;
   }): Promise<Array<{logName: string; entry: LogEntry}>>;
 
   /**
-   * Get aggregate statistics for all logs
+   * Create a new log
    *
-   * @returns Statistics object with total logs, total entries, and per-log statistics
+   * @param log Complete Log object
+   * @returns Created log
    */
-  getAggregateStatistics(): Promise<AggregateStatistics>;
+  createLog(log: Log): Promise<Log>;
 
   /**
-   * Get statistics for a specific log
+   * Get all logs
    *
-   * @param logName Log name
-   * @returns Statistics object for the specified log
+   * @returns Array of logs
    */
-  getLogStatistics(logName: string): Promise<LogStatistics | null>;
+  getLogs(): Promise<Log[]>;
 
   /**
-   * Update statistics for a log when an entry is added
+   * Get a log by name
+   *
+   * @param name Log name
+   * @returns Log or null if not found
+   */
+  getLog(name: string): Promise<Log | null>;
+
+  /**
+   * Update a log
+   *
+   * @param log Complete Log object
+   * @returns Updated log
+   */
+  updateLog(log: Log): Promise<Log>;
+
+  /**
+   * Delete a log
+   *
+   * @param name Log name
+   */
+  deleteLog(name: string): Promise<void>;
+
+  /**
+   * Append an entry to a log
    *
    * @param logName Log name
    * @param entry Log entry
+   * @returns ID of the new entry
    */
-  updateStatisticsOnAdd(logName: string, entry: LogEntry): Promise<void>;
+  appendLogEntry(logName: string, entry: LogEntry): Promise<string>;
 
   /**
-   * Update statistics for a log when an entry is updated
+   * Batch append entries to a log
    *
    * @param logName Log name
-   * @param oldEntry Old log entry
-   * @param newEntry New log entry
+   * @param entries Log entries
+   * @returns Result with IDs of the new entries
    */
-  updateStatisticsOnUpdate(logName: string, oldEntry: LogEntry, newEntry: LogEntry): Promise<void>;
+  batchAppendLogEntries(logName: string, entries: LogEntry[]): Promise<BatchAppendResult>;
 
   /**
-   * Update statistics for a log when an entry is deleted
+   * Get log entries
    *
    * @param logName Log name
-   * @param entry Log entry
+   * @param options Options for pagination
+   * @returns Paginated result of log entries
    */
-  updateStatisticsOnDelete(logName: string, entry: LogEntry): Promise<void>;
+  getLogEntries(logName: string, options: { limit?: number; offset?: number }): Promise<PaginatedResult<LogEntry>>;
 
   /**
-   * Update statistics for a log when it is cleared
+   * Get a log entry
    *
    * @param logName Log name
+   * @param entryId Entry ID
+   * @returns Log entry or null if not found
    */
-  updateStatisticsOnClear(logName: string): Promise<void>;
+  getLogEntry(logName: string, entryId: string): Promise<LogEntry | null>;
+
+  /**
+   * Search log entries
+   *
+   * @param logName Log name
+   * @param options Search options
+   * @returns Paginated result of log entries
+   */
+  searchLogEntries(logName: string, options: LogSearchOptions): Promise<PaginatedResult<LogEntry>>;
+
 }

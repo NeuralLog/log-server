@@ -1,9 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
-import axios from 'axios';
 import logger from '../utils/logger';
-
-// Auth service URL
-const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:3040';
+import { authClient } from '../services/AuthClient';
 
 /**
  * Middleware to verify API keys
@@ -32,36 +29,21 @@ export const apiKeyAuthMiddleware = async (req: Request, res: Response, next: Ne
       });
     }
 
-    // Check if we have a verification hash in the database
-    // If so, use zero-knowledge verification
     try {
       // Extract key ID from the API key
       const keyId = apiKey.split('.')[0];
 
-      // Get the API key metadata from the auth service
-      const metadataResponse = await axios.get(`${AUTH_SERVICE_URL}/api/apikeys/${keyId}`, {
-        headers: {
-          'X-Tenant-ID': tenantId
-        }
-      });
+      // Get the API key metadata from the auth service using the client-sdk
+      const metadataResult = await authClient.getApiKeyMetadata(keyId, tenantId);
 
-      const apiKeyData = metadataResponse.data.apiKey;
-
-      // Always use the auth service for verification
-      {
-        // Fall back to traditional verification
-        const response = await axios.post(`${AUTH_SERVICE_URL}/api/apikeys/verify`, {
-          apiKey
-        }, {
-          headers: {
-            'X-Tenant-ID': tenantId
-          }
-        });
+      if (metadataResult.apiKey) {
+        // Verify the API key using the client-sdk
+        const verifyResult = await authClient.verifyApiKey(apiKey, tenantId);
 
         // If the API key is valid, add the user ID and tenant ID to the request
-        if (response.data.valid) {
+        if (verifyResult.valid && verifyResult.userId) {
           req.user = {
-            id: response.data.userId,
+            id: verifyResult.userId,
             tenantId
           };
 
