@@ -3,6 +3,8 @@ import { Log } from '@neurallog/client-sdk/dist/types/api';
 import { MemoryStorageAdapter } from './MemoryStorageAdapter';
 import { NeDBStorageAdapter } from './NeDBStorageAdapter';
 import { RedisStorageAdapter, RedisOptions } from './RedisStorageAdapter';
+import { KeyValueStorageAdapter } from './KeyValueStorageAdapter';
+import { InMemoryKeyValueStorageAdapter } from './InMemoryKeyValueStorageAdapter';
 import path from 'path';
 import fs from 'fs';
 import logger from '../utils/logger';
@@ -36,6 +38,8 @@ export interface StorageAdapterFactoryOptions {
  * Storage adapter factory
  */
 export class StorageAdapterFactory {
+  private static keyValueStorageAdapter: KeyValueStorageAdapter;
+
   /**
    * Create a storage adapter for a specific namespace
    *
@@ -76,5 +80,18 @@ export class StorageAdapterFactory {
     // Default to in-memory storage
     logger.info(`No specific storage type configured, using in-memory storage for namespace: ${namespace}`);
     return new MemoryStorageAdapter(namespace);
+  }
+
+  /**
+   * Get a key-value storage adapter
+   * @returns A key-value storage adapter
+   */
+  public static getStorageAdapter(): KeyValueStorageAdapter {
+    if (!StorageAdapterFactory.keyValueStorageAdapter) {
+      // For now, we're using the in-memory adapter
+      // In the future, this could be configurable to use different backends
+      StorageAdapterFactory.keyValueStorageAdapter = new InMemoryKeyValueStorageAdapter();
+    }
+    return StorageAdapterFactory.keyValueStorageAdapter;
   }
 }

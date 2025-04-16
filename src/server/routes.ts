@@ -11,6 +11,8 @@ import {
   searchLogs
 } from './controllers/logsController';
 import { permissionController } from '../controllers/PermissionController';
+import { publicKeyController } from '../controllers/PublicKeyController';
+import { kekController } from '../controllers/KEKController';
 
 const router = express.Router();
 
@@ -395,5 +397,280 @@ router.post('/permissions/check', (req, res, next) => {
   req.skipAuth = true;
   next();
 }, permissionController.checkPermission.bind(permissionController));
+
+/**
+ * @swagger
+ * tags:
+ *   - name: Public Keys
+ *     description: Public key management
+ */
+
+/**
+ * @swagger
+ * /public-keys:
+ *   post:
+ *     summary: Store a public key
+ *     tags: [Public Keys]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - publicKey
+ *               - keyId
+ *             properties:
+ *               publicKey:
+ *                 type: string
+ *                 description: Public key in PEM format
+ *               keyId:
+ *                 type: string
+ *                 description: Key ID
+ *     responses:
+ *       200:
+ *         description: Public key stored successfully
+ *       400:
+ *         description: Bad request
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.post('/public-keys', publicKeyController.storePublicKey);
+
+/**
+ * @swagger
+ * /public-keys/{userId}/{keyId}:
+ *   get:
+ *     summary: Get a public key
+ *     tags: [Public Keys]
+ *     parameters:
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: User ID
+ *       - name: keyId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Key ID
+ *     responses:
+ *       200:
+ *         description: Public key retrieved successfully
+ *       400:
+ *         description: Bad request
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Public key not found
+ *       500:
+ *         description: Server error
+ */
+router.get('/public-keys/:userId/:keyId', publicKeyController.getPublicKey);
+
+/**
+ * @swagger
+ * /public-keys/{keyId}:
+ *   delete:
+ *     summary: Delete a public key
+ *     tags: [Public Keys]
+ *     parameters:
+ *       - name: keyId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Key ID
+ *     responses:
+ *       200:
+ *         description: Public key deleted successfully
+ *       400:
+ *         description: Bad request
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.delete('/public-keys/:keyId', publicKeyController.deletePublicKey);
+
+/**
+ * @swagger
+ * /public-keys/{userId}:
+ *   get:
+ *     summary: List all public keys for a user
+ *     tags: [Public Keys]
+ *     parameters:
+ *       - name: userId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: User ID
+ *     responses:
+ *       200:
+ *         description: Public keys listed successfully
+ *       400:
+ *         description: Bad request
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.get('/public-keys/:userId', publicKeyController.listPublicKeys);
+
+/**
+ * @swagger
+ * tags:
+ *   - name: KEK Versions
+ *     description: KEK version management
+ */
+
+/**
+ * @swagger
+ * /kek-versions:
+ *   post:
+ *     summary: Store a new KEK version
+ *     tags: [KEK Versions]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - id
+ *               - createdAt
+ *               - status
+ *             properties:
+ *               id:
+ *                 type: string
+ *                 description: KEK version ID
+ *               createdAt:
+ *                 type: string
+ *                 format: date-time
+ *                 description: Creation date
+ *               status:
+ *                 type: string
+ *                 enum: [active, decrypt-only, inactive]
+ *                 description: KEK version status
+ *               reason:
+ *                 type: string
+ *                 description: Reason for creating the KEK version
+ *     responses:
+ *       200:
+ *         description: KEK version stored successfully
+ *       400:
+ *         description: Bad request
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.post('/kek-versions', kekController.storeKEKVersion);
+
+/**
+ * @swagger
+ * /kek-versions/{id}:
+ *   get:
+ *     summary: Get a KEK version
+ *     tags: [KEK Versions]
+ *     parameters:
+ *       - name: id
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: KEK version ID
+ *     responses:
+ *       200:
+ *         description: KEK version retrieved successfully
+ *       400:
+ *         description: Bad request
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: KEK version not found
+ *       500:
+ *         description: Server error
+ */
+router.get('/kek-versions/:id', kekController.getKEKVersion);
+
+/**
+ * @swagger
+ * /kek-versions:
+ *   get:
+ *     summary: List all KEK versions
+ *     tags: [KEK Versions]
+ *     responses:
+ *       200:
+ *         description: KEK versions listed successfully
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.get('/kek-versions', kekController.listKEKVersions);
+
+/**
+ * @swagger
+ * /kek-versions/current:
+ *   get:
+ *     summary: Get the current active KEK version
+ *     tags: [KEK Versions]
+ *     responses:
+ *       200:
+ *         description: Current KEK version retrieved successfully
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: No active KEK version found
+ *       500:
+ *         description: Server error
+ */
+router.get('/kek-versions/current', kekController.getCurrentKEKVersion);
+
+/**
+ * @swagger
+ * /kek-versions/{id}:
+ *   put:
+ *     summary: Update a KEK version
+ *     tags: [KEK Versions]
+ *     parameters:
+ *       - name: id
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: KEK version ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - status
+ *             properties:
+ *               status:
+ *                 type: string
+ *                 enum: [active, decrypt-only, inactive]
+ *                 description: KEK version status
+ *     responses:
+ *       200:
+ *         description: KEK version updated successfully
+ *       400:
+ *         description: Bad request
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: KEK version not found
+ *       500:
+ *         description: Server error
+ */
+router.put('/kek-versions/:id', kekController.updateKEKVersion);
 
 export default router;
